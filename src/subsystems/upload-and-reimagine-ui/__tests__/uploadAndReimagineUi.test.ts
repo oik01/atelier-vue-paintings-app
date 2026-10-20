@@ -1301,4 +1301,314 @@ describe('Subsystem 2 (V2.4): upload-and-reimagine-ui', () => {
       assertNoSecretOrModelTermsInVisibleDom(container);
     });
   });
+
+  describe('5. FinerWorks v3 Integration — Progressive Disclosure Pre-Configuration, Dual-Verified Variation Strip & Caliper Standard/Custom SKU Cards (Taste Directives #3, #4 & Requirement #6)', () => {
+    function triggerSelectChange(
+      selectEl: HTMLSelectElement,
+      nextValue: string
+    ): void {
+      const descriptor = Object.getOwnPropertyDescriptor(
+        window.HTMLSelectElement.prototype,
+        'value'
+      );
+      if (descriptor?.set) {
+        descriptor.set.call(selectEl, nextValue);
+      } else {
+        selectEl.value = nextValue;
+      }
+      selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    it('5.1 [Taste Directive #3] Page 2 AiPromptConfigurator defaults finerworks-pre-config-section to curator mode, progressively discloses locked options grid when clicking finerworks-mode-locked, and auto-disables/resets mat when selecting Stretched Canvas (12), Metal (21), or Acrylic (31)', () => {
+      let latestConfig = createInitialPromptConfiguration();
+
+      function StatefulFwConfiguratorHarness() {
+        const [config, setConfig] = useState<AiPromptConfiguration>(() =>
+          createInitialPromptConfiguration()
+        );
+        return React.createElement(AiPromptConfigurator, {
+          config,
+          onChangeConfig: (next) => {
+            setConfig(next);
+            latestConfig = next;
+          },
+          onSubmitReimagine: vi.fn(),
+          generationStage: 'idle',
+          hasUploadedRoom: true,
+        });
+      }
+
+      act(() => {
+        root.render(React.createElement(StatefulFwConfiguratorHarness));
+      });
+
+      const fwSection = container.querySelector(
+        '[data-testid="finerworks-pre-config-section"]'
+      );
+      const curatorBtn = container.querySelector(
+        '[data-testid="finerworks-mode-curator"]'
+      ) as HTMLButtonElement;
+      const lockedBtn = container.querySelector(
+        '[data-testid="finerworks-mode-locked"]'
+      ) as HTMLButtonElement;
+      const curatorSummaryBar = container.querySelector(
+        '[data-testid="finerworks-curator-summary-bar"]'
+      );
+
+      expect(fwSection).not.toBeNull();
+      expect(curatorBtn).not.toBeNull();
+      expect(lockedBtn).not.toBeNull();
+      expect(curatorBtn.getAttribute('aria-pressed')).toBe('true');
+      expect(lockedBtn.getAttribute('aria-pressed')).toBe('false');
+      expect(curatorSummaryBar).not.toBeNull();
+      expect(curatorSummaryBar?.textContent).toContain(
+        'AI Curator harmonizes archival substrate, museum frame moulding & proportion to your room'
+      );
+      // Locked options grid is hidden by default
+      expect(
+        container.querySelector('[data-testid="finerworks-locked-options-grid"]')
+      ).toBeNull();
+
+      // Click finerworks-mode-locked to progressively disclose the 4 selectors + SKU preview
+      act(() => {
+        lockedBtn.click();
+      });
+
+      expect(lockedBtn.getAttribute('aria-pressed')).toBe('true');
+      expect(
+        container.querySelector('[data-testid="finerworks-curator-summary-bar"]')
+      ).toBeNull();
+
+      const lockedGrid = container.querySelector(
+        '[data-testid="finerworks-locked-options-grid"]'
+      );
+      const mediaSelect = container.querySelector(
+        '[data-testid="finerworks-lock-media-select"]'
+      ) as HTMLSelectElement;
+      const frameSelect = container.querySelector(
+        '[data-testid="finerworks-lock-frame-select"]'
+      ) as HTMLSelectElement;
+      const matSelect = container.querySelector(
+        '[data-testid="finerworks-lock-mat-select"]'
+      ) as HTMLSelectElement;
+      const sizeSelect = container.querySelector(
+        '[data-testid="finerworks-lock-size-select"]'
+      ) as HTMLSelectElement;
+      const skuPreview = container.querySelector(
+        '[data-testid="finerworks-locked-sku-preview"]'
+      );
+
+      expect(lockedGrid).not.toBeNull();
+      expect(mediaSelect).not.toBeNull();
+      expect(frameSelect).not.toBeNull();
+      expect(matSelect).not.toBeNull();
+      expect(sizeSelect).not.toBeNull();
+      expect(skuPreview).not.toBeNull();
+      expect(skuPreview?.textContent).toContain('5M42M9S24X36');
+      expect(matSelect.disabled).toBe(false);
+      expect(matSelect.value).toBe('1.5in');
+
+      // Select Stretched Canvas (mediaId = 12), Metal (21), and Acrylic (31) -> matSelect disables and resets to 'none'
+      for (const nonMattableId of ['12', '21', '31']) {
+        act(() => {
+          triggerSelectChange(mediaSelect, nonMattableId);
+        });
+        expect(matSelect.disabled).toBe(true);
+        expect(matSelect.value).toBe('none');
+        expect(latestConfig.finerworksConstraints?.mode).toBe(
+          'user-locked-finerworks'
+        );
+        expect(latestConfig.finerworksConstraints?.lockedMediaId).toBe(
+          Number(nonMattableId)
+        );
+        expect(latestConfig.finerworksConstraints?.lockedMatWidthId).toBe(
+          'none'
+        );
+        expect(latestConfig.editablePromptText).toContain(
+          `Substrate MediaID ${nonMattableId}`
+        );
+      }
+
+      // Switch back to Hahnemühle Fine Art Paper (mediaId = 42), select 2.5in mat, Walnut frame, and 30x40 size
+      act(() => {
+        triggerSelectChange(mediaSelect, '42');
+      });
+      expect(matSelect.disabled).toBe(false);
+
+      act(() => {
+        triggerSelectChange(frameSelect, 'american-black-walnut');
+        triggerSelectChange(matSelect, '2.5in');
+        triggerSelectChange(sizeSelect, '30x40');
+      });
+
+      expect(latestConfig.finerworksConstraints?.lockedFrameId).toBe(
+        'american-black-walnut'
+      );
+      expect(latestConfig.finerworksConstraints?.lockedMatWidthId).toBe('2.5in');
+      expect(latestConfig.finerworksConstraints?.lockedSizeId).toBe('30x40');
+      expect(latestConfig.editablePromptText).toContain(
+        'Frame american-black-walnut, Mat 2.5in, Target Size 30x40'
+      );
+
+      expect(container.querySelectorAll('a[href]').length).toBe(0);
+      assertNoSecretOrModelTermsInVisibleDom(container);
+    });
+
+    it('5.2 [Taste Directive #4] Page 4 ReimaginedVariationsStrip enforces <= 4 visible pill badges per card, renders variation-dual-verified-badge, exposes data-product-code, and shows human-readable FinerWorks edition summary', () => {
+      const variationsWithFw: ReimaginedRoomVariation[] = [
+        {
+          id: 'fw-var-1',
+          createdAt: 1700000001000,
+          engineId: 'astra',
+          engineModelName: 'GPT-6 Astra (openai/gpt-6-astra)',
+          imageModelName: 'google/gemini-nano-banana-2.1',
+          placementAction: 'add-only',
+          styleMode: 'ai-curated',
+          promptUsed: 'Internal instruction',
+          originalRoomDataUrl: SAMPLE_ROOM_PHOTOS[0].dataUrl,
+          reimaginedRoomDataUrl: SAMPLE_ROOM_PHOTOS[2].dataUrl,
+          detectedCropBox: { ymin: 140, xmin: 320, ymax: 480, xmax: 680 },
+          activeCropBox: { ymin: 140, xmin: 320, ymax: 480, xmax: 680 },
+          croppedScreenshotDataUrl: SAMPLE_ROOM_PHOTOS[0].dataUrl,
+          identicalPrintMasterDataUrl: SAMPLE_ROOM_PHOTOS[0].dataUrl,
+          printMasterWidthPx: 2400,
+          printMasterHeightPx: 3600,
+          artworkTitle: 'Travertine Archival Study',
+          artworkDescription: 'Impasto mineral pigment on cotton rag',
+          roomStyleSummary: 'Balanced to warm plaster walls and oak timber.',
+          detectedFrameId: 'american-black-walnut',
+          detectedMatWidthId: '2.5in',
+          finerworksMediaId: 42,
+          finerworksProductCode: '5M42M9S24X36F204S29X41J2S24X36G1',
+        },
+      ];
+
+      act(() => {
+        root.render(
+          React.createElement(ReimaginedVariationsStrip, {
+            variations: variationsWithFw,
+            activeVariationId: 'fw-var-1',
+            onSelectVariation: vi.fn(),
+            onReimagineAnother: vi.fn(),
+          })
+        );
+      });
+
+      const card = container.querySelector(
+        '[data-testid="variation-card-fw-var-1"]'
+      ) as HTMLElement;
+      expect(card).not.toBeNull();
+      expect(card.getAttribute('data-product-code')).toBe(
+        '5M42M9S24X36F204S29X41J2S24X36G1'
+      );
+
+      // Verify <= 4 visible pill badges on the card (Viewpoints, Art Pieces, Placement, Dual-Verified Preservation)
+      const pillBadges = [
+        card.querySelector('[data-testid="variation-viewpoints-badge-fw-var-1"]'),
+        card.querySelector('[data-testid="variation-pieces-badge-fw-var-1"]'),
+        card.querySelector('[data-testid="variation-placement-badge-fw-var-1"]'),
+        card.querySelector('[data-testid="variation-preservation-badge-fw-var-1"]'),
+      ].filter(Boolean);
+      expect(pillBadges.length).toBeLessThanOrEqual(4);
+      expect(pillBadges.length).toBe(4);
+
+      const preservationBadge = card.querySelector(
+        '[data-testid="variation-preservation-badge-fw-var-1"]'
+      );
+      const dualVerifiedBadge = card.querySelector(
+        '[data-testid="variation-dual-verified-badge-fw-var-1"]'
+      );
+      expect(preservationBadge).not.toBeNull();
+      expect(dualVerifiedBadge).not.toBeNull();
+      expect(dualVerifiedBadge?.textContent).toContain(
+        '✓ Dual-Verified: Room & Archival Spec'
+      );
+
+      const editionSummaryEl = card.querySelector(
+        '[data-testid="variation-engine-model-fw-var-1"]'
+      );
+      expect(editionSummaryEl).not.toBeNull();
+      expect(editionSummaryEl?.textContent).toContain('24" × 36"');
+      expect(editionSummaryEl?.textContent).toContain('Black Walnut');
+      expect(editionSummaryEl?.textContent).toContain('Hahnemühle Etching');
+
+      expect(container.querySelectorAll('a[href]').length).toBe(0);
+      assertNoSecretOrModelTermsInVisibleDom(container);
+    });
+
+    it('5.3 [Requirement #6] ScaleCalibrationPage renders caliper-finerworks-custom-spec-card with standard & custom-milled FinerWorks SKUs and fires onApplyCustomFinerWorksDimensions + onApplyScaleAndCreate when clicking apply-custom-finerworks-size-btn', () => {
+      const onApplyCustomFinerWorksDimensions = vi.fn();
+      const onApplyScaleAndCreate = vi.fn();
+
+      const calibratedQuestions: ScaleCalibrationQuestion[] =
+        DEFAULT_SCALE_CALIBRATION_QUESTIONS.map((q, idx) =>
+          idx === 0 ? { ...q, userAnswerInches: 72 } : { ...q }
+        );
+      const recommendation = computeFallbackScaleRecommendation(
+        calibratedQuestions,
+        {
+          cropBox: { ymin: 180, xmin: 260, ymax: 560, xmax: 740 },
+          frameMouldingWidthInches: 1.5,
+          matWidthInches: 1.5,
+        }
+      );
+
+      act(() => {
+        root.render(
+          React.createElement(ScaleCalibrationPage, {
+            roomImageDataUrl: SAMPLE_ROOM_PHOTOS[0].dataUrl,
+            roomAngles: SAMPLE_ROOM_PHOTOS[0].angles,
+            questions: calibratedQuestions,
+            scaleRecommendation: recommendation,
+            selectedFrameId: 'american-black-walnut',
+            selectedMatWidthId: '1.5in',
+            selectedMediaId: 42,
+            onApplyCustomFinerWorksDimensions,
+            onUpdateQuestionAnswer: vi.fn(),
+            onApplyScaleAndCreate,
+            onSkipScaleAndCreate: vi.fn(),
+            onBackToCuration: vi.fn(),
+          })
+        );
+      });
+
+      const specCard = container.querySelector(
+        '[data-testid="caliper-finerworks-custom-spec-card"]'
+      );
+      const standardSkuEl = container.querySelector(
+        '[data-testid="caliper-finerworks-standard-sku"]'
+      );
+      const customSkuEl = container.querySelector(
+        '[data-testid="caliper-finerworks-custom-sku"]'
+      );
+      const applyCustomFwBtn = container.querySelector(
+        '[data-testid="apply-custom-finerworks-size-btn"]'
+      ) as HTMLButtonElement;
+
+      expect(specCard).not.toBeNull();
+      expect(standardSkuEl).not.toBeNull();
+      expect(customSkuEl).not.toBeNull();
+      expect(applyCustomFwBtn).not.toBeNull();
+      expect(standardSkuEl?.textContent).toContain('5M42M9S');
+      expect(standardSkuEl?.textContent).toContain('Outer');
+      expect(customSkuEl?.textContent).toContain('5M42M9S');
+      expect(customSkuEl?.textContent).toContain('300 PPI Master:');
+
+      act(() => {
+        applyCustomFwBtn.click();
+      });
+
+      expect(onApplyCustomFinerWorksDimensions).toHaveBeenCalledTimes(1);
+      const [customW, customH, customSpec] =
+        onApplyCustomFinerWorksDimensions.mock.calls[0];
+      expect(typeof customW).toBe('number');
+      expect(typeof customH).toBe('number');
+      expect(customSpec.productCode).toContain('5M42M9S');
+      expect(onApplyScaleAndCreate).toHaveBeenCalledTimes(1);
+
+      expect(container.querySelectorAll('a[href]').length).toBe(0);
+      assertNoSecretOrModelTermsInVisibleDom(container);
+    });
+  });
 });
+

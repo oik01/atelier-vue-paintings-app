@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 // @ts-ignore - Node built-in fs module without requiring @types/node
 import * as fs from 'node:fs';
+import { handleFinerWorksApiRequest } from './src/subsystems/finerworks-catalog-sync/finerworksServerProxy';
 
 interface NodeProcessLike {
   env?: Record<string, string | undefined>;
@@ -513,6 +514,131 @@ export function openRouterProxyPlugin(): Plugin {
   };
 }
 
+export function resolveFinerWorksEnvKeys(): {
+  webApiKey: string;
+  appKey: string;
+} {
+  const env = nodeProcess?.env ?? {};
+  let webApiKey =
+    env.FINERWORKS_WEB_API_KEY?.trim() ||
+    env.VITE_FINERWORKS_WEB_API_KEY?.trim() ||
+    '';
+  let appKey =
+    env.FINERWORKS_APP_KEY?.trim() ||
+    env.VITE_FINERWORKS_APP_KEY?.trim() ||
+    '';
+
+  if (webApiKey && appKey) {
+    return { webApiKey, appKey };
+  }
+
+  const candidatePaths = [
+    '/Users/omarkreidieh/Documents/Paintings App/.env',
+    '/Users/omarkreidieh/Documents/Paintings App/.env.local',
+    '/Users/omarkreidieh/.env',
+  ];
+
+  if (typeof nodeProcess?.cwd === 'function') {
+    const cwdEnvPath = `${nodeProcess.cwd()}/.env`;
+    if (!candidatePaths.includes(cwdEnvPath)) {
+      candidatePaths.unshift(cwdEnvPath);
+    }
+  }
+
+  for (const envPath of candidatePaths) {
+    const values = parseEnvFile(envPath);
+    if (!webApiKey) {
+      webApiKey =
+        values.FINERWORKS_WEB_API_KEY?.trim() ||
+        values.VITE_FINERWORKS_WEB_API_KEY?.trim() ||
+        '';
+    }
+    if (!appKey) {
+      appKey =
+        values.FINERWORKS_APP_KEY?.trim() ||
+        values.VITE_FINERWORKS_APP_KEY?.trim() ||
+        '';
+    }
+    if (webApiKey && appKey) {
+      break;
+    }
+  }
+
+  return { webApiKey, appKey };
+}
+
+function attachFinerWorksMiddleware(server: MiddlewareServerLike): void {
+  server.middlewares.use('/api/finerworks', async (req, res) => {
+    if (req.method === 'OPTIONS') {
+      res.statusCode = 204;
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, Authorization, web_api_key, app_key'
+      );
+      res.end('');
+      return;
+    }
+
+    try {
+      const rawBody =
+        req.method === 'GET' ? '' : await readRequestBody(req);
+      let parsedBody: unknown = {};
+      if (rawBody && rawBody.trim().length > 0) {
+        try {
+          parsedBody = JSON.parse(rawBody);
+        } catch {
+          parsedBody = {};
+        }
+      }
+
+      const envKeys = resolveFinerWorksEnvKeys();
+      const rawUrl = req.url || '/api/finerworks/catalog-sync';
+      const endpointPath = rawUrl.startsWith('/api/finerworks')
+        ? rawUrl
+        : `/api/finerworks/${rawUrl.replace(/^\/+/, '')}`;
+
+      const result = await handleFinerWorksApiRequest(
+        endpointPath,
+        req.method || 'GET',
+        parsedBody,
+        envKeys
+      );
+
+      res.statusCode = result.statusCode;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(result.payload));
+    } catch (error) {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(
+        JSON.stringify({
+          status: { success: false, code: 500 },
+          error: {
+            message:
+              error instanceof Error
+                ? `FinerWorks v3 proxy error: ${error.message}`
+                : 'FinerWorks v3 proxy error',
+          },
+        })
+      );
+    }
+  });
+}
+
+export function finerworksApiProxyPlugin(): Plugin {
+  return {
+    name: 'atelier-vue-finerworks-v3-proxy',
+    configureServer(server) {
+      attachFinerWorksMiddleware(server as unknown as MiddlewareServerLike);
+    },
+    configurePreviewServer(server) {
+      attachFinerWorksMiddleware(server as unknown as MiddlewareServerLike);
+    },
+  };
+}
+
 const resolvedStartupApiKey = resolveOpenRouterApiKey();
 if (resolvedStartupApiKey && nodeProcess?.env) {
   if (!nodeProcess.env.OPENROUTER_API_KEY) {
@@ -524,7 +650,7 @@ if (resolvedStartupApiKey && nodeProcess?.env) {
 }
 
 export default defineConfig({
-  plugins: [react(), openRouterProxyPlugin()],
+  plugins: [react(), openRouterProxyPlugin(), finerworksApiProxyPlugin()],
   define:
     resolvedStartupApiKey && !nodeProcess?.env?.VITE_OPENROUTER_API_KEY
       ? {

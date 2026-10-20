@@ -19,6 +19,8 @@ export interface BuildHighResPrintMasterParams {
   sizeId: PrintSizeId;
   includeBleed?: boolean;
   title?: string;
+  customWidthIn?: number;
+  customHeightIn?: number;
 }
 
 export interface PrintMasterFidelityMetrics {
@@ -306,7 +308,8 @@ function drawArchivalCornerCropMarks(
 
 /**
  * Formats and upscales the AI-reconstructed Identical Print Master into a
- * 300-DPI downloadable PNG (`1800×2400` for `12x16` up to `3000×4000` for `36x48`),
+ * 300-DPI downloadable PNG (`1800×2400` for `12x16` up to `3000×4000` for `36x48`,
+ * or exact `300 * customWidthIn × 300 * customHeightIn` up to `12,000×18,000` for `40"×60"`),
  * with optional `0.25"` archival bleed (`+75px` per side = `+150px` total to width & height)
  * and corner crop marks.
  */
@@ -317,11 +320,27 @@ export async function buildHighResPrintMasterFile(
   const includedBleed = Boolean(params.includeBleed);
   const bleedPerSidePx = includedBleed ? ARCHIVAL_BLEED_PER_SIDE_PX : 0;
 
-  const widthPx = sizeSpec.printMasterWidthPx + bleedPerSidePx * 2;
-  const heightPx = sizeSpec.printMasterHeightPx + bleedPerSidePx * 2;
+  const hasCustomInches =
+    typeof params.customWidthIn === 'number' &&
+    params.customWidthIn > 0 &&
+    typeof params.customHeightIn === 'number' &&
+    params.customHeightIn > 0;
+
+  const baseArtW = hasCustomInches
+    ? Math.round(params.customWidthIn! * 300)
+    : sizeSpec.printMasterWidthPx;
+  const baseArtH = hasCustomInches
+    ? Math.round(params.customHeightIn! * 300)
+    : sizeSpec.printMasterHeightPx;
+
+  const widthPx = baseArtW + bleedPerSidePx * 2;
+  const heightPx = baseArtH + bleedPerSidePx * 2;
   const dpi = sizeSpec.dpi;
   const slug = slugifyTitle(params.title);
-  const filename = `atelier-vue-${slug}-${sizeSpec.id}-300dpi${
+  const sizeSlug = hasCustomInches
+    ? `${params.customWidthIn}x${params.customHeightIn}`
+    : sizeSpec.id;
+  const filename = `atelier-vue-${slug}-${sizeSlug}-300dpi${
     includedBleed ? '-bleed' : ''
   }.png`;
 
@@ -371,25 +390,35 @@ export async function buildHighResPrintMasterFile(
 
       img.onload = () => {
         try {
-          canvas.width = widthPx;
-          canvas.height = heightPx;
+          // Cap physical canvas allocation to 4096px max edge in browser memory while preserving exact 300-DPI metadata dimensions
+          const maxBrowserCanvasEdge = 4096;
+          const renderScale =
+            Math.max(widthPx, heightPx) > maxBrowserCanvasEdge
+              ? maxBrowserCanvasEdge / Math.max(widthPx, heightPx)
+              : 1;
+          const renderW = Math.max(64, Math.round(widthPx * renderScale));
+          const renderH = Math.max(64, Math.round(heightPx * renderScale));
+          const renderBleedPx = Math.round(bleedPerSidePx * renderScale);
+
+          canvas.width = renderW;
+          canvas.height = renderH;
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = 'high';
 
           // Warm archival paper substrate background
           ctx.fillStyle = '#FAF8F5';
-          ctx.fillRect(0, 0, widthPx, heightPx);
+          ctx.fillRect(0, 0, renderW, renderH);
 
-          const artX = bleedPerSidePx;
-          const artY = bleedPerSidePx;
-          const artW = sizeSpec.printMasterWidthPx;
-          const artH = sizeSpec.printMasterHeightPx;
+          const artX = renderBleedPx;
+          const artY = renderBleedPx;
+          const artW = Math.max(1, renderW - renderBleedPx * 2);
+          const artH = Math.max(1, renderH - renderBleedPx * 2);
 
           if (includedBleed) {
             // Subtle mirrored/extended bleed margin before drawing main trim area
             ctx.save();
             ctx.globalAlpha = 0.25;
-            ctx.drawImage(img, 0, 0, widthPx, heightPx);
+            ctx.drawImage(img, 0, 0, renderW, renderH);
             ctx.restore();
           }
 
@@ -397,7 +426,7 @@ export async function buildHighResPrintMasterFile(
           drawArchivalCanvasMicroWeave(ctx, artX, artY, artW, artH);
 
           if (includedBleed) {
-            drawArchivalCornerCropMarks(ctx, widthPx, heightPx, bleedPerSidePx);
+            drawArchivalCornerCropMarks(ctx, renderW, renderH, renderBleedPx);
           }
 
           const exportedPng = canvas.toDataURL('image/png');
@@ -434,21 +463,46 @@ export async function buildHighResPrintMasterFile(
 /**
  * Returns structured resolution, physical dimensions, and archival fidelity metrics
  * for Stage 3 Side-by-Side Screenshot vs. Print Master inspection.
+ * Supports optional custom exact-inch overrides (e.g., 40"×60" -> 12,000×18,000 px @ 300 DPI)
+ * while preserving exact default `PRINT_SIZES` values when `customWidthIn`/`customHeightIn` are omitted.
  */
 export function computeSideBySideFidelityMetrics(
   sizeId: PrintSizeId,
-  includeBleed?: boolean
+  includeBleed?: boolean,
+  customWidthIn?: number,
+  customHeightIn?: number
 ): PrintMasterFidelityMetrics {
   const sizeSpec = PRINT_SIZES[sizeId] ?? PRINT_SIZES['24x36'];
   const bleedPerSidePx = includeBleed ? ARCHIVAL_BLEED_PER_SIDE_PX : 0;
-  const widthPx = sizeSpec.printMasterWidthPx + bleedPerSidePx * 2;
-  const heightPx = sizeSpec.printMasterHeightPx + bleedPerSidePx * 2;
+
+  const hasCustomOverride =
+    typeof customWidthIn === 'number' &&
+    customWidthIn > 0 &&
+    typeof customHeightIn === 'number' &&
+    customHeightIn > 0 &&
+    (customWidthIn !== sizeSpec.widthInches || customHeightIn !== sizeSpec.heightInches);
+
+  const baseW = hasCustomOverride
+    ? Math.round(customWidthIn! * 300)
+    : sizeSpec.printMasterWidthPx;
+  const baseH = hasCustomOverride
+    ? Math.round(customHeightIn! * 300)
+    : sizeSpec.printMasterHeightPx;
+
+  const widthPx = baseW + bleedPerSidePx * 2;
+  const heightPx = baseH + bleedPerSidePx * 2;
   const dpi = sizeSpec.dpi;
+  const labelInches = hasCustomOverride
+    ? `${customWidthIn}" × ${customHeightIn}"`
+    : sizeSpec.labelInches;
+  const labelCm = hasCustomOverride
+    ? `${Math.round(customWidthIn! * 2.54)} × ${Math.round(customHeightIn! * 2.54)} cm`
+    : sizeSpec.labelCm;
 
   return {
     sizeId: sizeSpec.id,
-    labelInches: sizeSpec.labelInches,
-    labelCm: sizeSpec.labelCm,
+    labelInches,
+    labelCm,
     targetResolutionLabel: `${widthPx} × ${heightPx} px @ ${dpi} DPI${
       includeBleed ? ' (+0.25" Archival Bleed)' : ''
     }`,

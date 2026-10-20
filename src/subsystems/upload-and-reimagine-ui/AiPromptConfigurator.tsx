@@ -6,8 +6,23 @@ import {
   ArtPieceCountMode,
   ArtStyleSelectionMode,
   CuratedArtStylePreset,
+  FinerWorksPromptConstraintConfig,
+  FinerWorksStandardSizeId,
+  FrameProfileId,
+  MatWidthId,
   WallPlacementAction,
 } from '../../contracts/masterContract';
+import {
+  buildFinerWorksProductSpec,
+  FINERWORKS_ALL_231_FRAMES,
+  FINERWORKS_FRAME_COLLECTIONS,
+  FINERWORKS_FRAME_MOULDINGS,
+  FINERWORKS_MEDIA_SPECS,
+  FINERWORKS_SIZE_OPTIONS,
+  getFinerWorksFrameByProfileId,
+  getFinerWorksMediaById,
+  getFinerWorksSizeById,
+} from '../finerworks-catalog-sync';
 
 export interface ArtStylePresetOption {
   id: CuratedArtStylePreset;
@@ -272,6 +287,17 @@ export function composeDefaultUiPrompt(config: ComposeUiPromptInput): string {
       ? `Additional User Preferences & Details: ${additionalDetails}.`
       : '';
 
+  let finerworksDirective = '';
+  if (config.finerworksConstraints?.mode === 'user-locked-finerworks') {
+    const fw = config.finerworksConstraints;
+    const lockedMediaId = fw.lockedMediaId ?? 42;
+    const media = getFinerWorksMediaById(lockedMediaId);
+    const lockedFrameId = fw.lockedFrameId ?? 'natural-white-oak';
+    const lockedMatWidthId = fw.lockedMatWidthId ?? '1.5in';
+    const lockedSizeId = fw.lockedSizeId ?? '24x36';
+    finerworksDirective = `Archival Locked Edition Constraints: Substrate MediaID ${lockedMediaId} (${media.shortName}), Frame ${lockedFrameId}, Mat ${lockedMatWidthId}, Target Size ${lockedSizeId}.`;
+  }
+
   return [
     `[AI Engine: ${engineLabel}] Reimagine this exact room photo with museum-grade framed wall art.`,
     'Curatorial Thinking Protocol: First analyze the style of furniture, the location of the space, and the color palette of the room before determining an appropriate piece of art that will look good.',
@@ -280,6 +306,7 @@ export function composeDefaultUiPrompt(config: ComposeUiPromptInput): string {
     locationDirective,
     `Art Style Direction: ${styleDirective}`,
     additionalDetailsDirective,
+    finerworksDirective,
     'STRICT PRESERVATION RULE: Do NOT remove, move, hide, resize, or alter any pre-existing furniture (sofas, chairs, tables, lamps, rugs, plants, curtains, pillows, decor) or room dimensions, walls, windows, or camera perspective. Confirm before output that ONLY the wall art has changed.',
   ]
     .filter((segment) => segment.length > 0)
@@ -299,6 +326,7 @@ export function createInitialPromptConfiguration(
   const customStyleNote: string = overrides?.customStyleNote ?? '';
   const additionalUserDetails: string = overrides?.additionalUserDetails ?? '';
   const isPromptManuallyEdited: boolean = overrides?.isPromptManuallyEdited ?? false;
+  const finerworksConstraints = overrides?.finerworksConstraints;
 
   const editablePromptText =
     overrides?.editablePromptText !== undefined
@@ -312,6 +340,9 @@ export function createInitialPromptConfiguration(
           stylePreset,
           customStyleNote,
           additionalUserDetails,
+          ...(finerworksConstraints !== undefined
+            ? { finerworksConstraints }
+            : {}),
         });
 
   return {
@@ -325,6 +356,9 @@ export function createInitialPromptConfiguration(
     additionalUserDetails,
     editablePromptText,
     isPromptManuallyEdited,
+    ...(finerworksConstraints !== undefined
+      ? { finerworksConstraints }
+      : {}),
   };
 }
 
@@ -478,6 +512,8 @@ export const AiPromptConfigurator: React.FC<AiPromptConfiguratorProps> = ({
   const applyStructuredConfigChange = (
     partial: Partial<Omit<AiPromptConfiguration, 'editablePromptText' | 'isPromptManuallyEdited'>>
   ) => {
+    const nextFinerworksConstraints =
+      partial.finerworksConstraints ?? config.finerworksConstraints;
     const nextCore = {
       engineId: partial.engineId ?? config.engineId,
       placementAction: partial.placementAction ?? config.placementAction,
@@ -490,6 +526,9 @@ export const AiPromptConfigurator: React.FC<AiPromptConfiguratorProps> = ({
       customStyleNote: partial.customStyleNote ?? config.customStyleNote ?? '',
       additionalUserDetails:
         partial.additionalUserDetails ?? config.additionalUserDetails ?? '',
+      ...(nextFinerworksConstraints !== undefined
+        ? { finerworksConstraints: nextFinerworksConstraints }
+        : {}),
     };
 
     const nextPrompt = buildPrompt(nextCore);
@@ -501,6 +540,143 @@ export const AiPromptConfigurator: React.FC<AiPromptConfiguratorProps> = ({
         nextCore.additionalUserDetails.trim().length > 0 ||
           nextCore.placementLocationNote.trim().length > 0
       ),
+    });
+  };
+
+  const activeFwMode: FinerWorksPromptConstraintConfig['mode'] =
+    config.finerworksConstraints?.mode ?? 'curator-selects-finerworks';
+
+  const currentLockedMediaId = config.finerworksConstraints?.lockedMediaId ?? 42;
+  const currentLockedFrameId: FrameProfileId =
+    config.finerworksConstraints?.lockedFrameId ?? 'natural-white-oak';
+  const currentLockedMatWidthId: MatWidthId =
+    config.finerworksConstraints?.lockedMatWidthId ?? '1.5in';
+  const currentLockedSizeId: FinerWorksStandardSizeId =
+    config.finerworksConstraints?.lockedSizeId ?? '24x36';
+
+  const selectedMedia = getFinerWorksMediaById(currentLockedMediaId);
+  const selectedFrame = getFinerWorksFrameByProfileId(currentLockedFrameId);
+  const selectedSize = getFinerWorksSizeById(currentLockedSizeId);
+
+  const lockedBuiltSpec = buildFinerWorksProductSpec({
+    mediaId: selectedMedia.mediaId,
+    printWidthIn: selectedSize.widthInches,
+    printHeightIn: selectedSize.heightInches,
+    frameProfileId: selectedFrame.profileId,
+    matWidthId: currentLockedMatWidthId,
+    matColorId: config.finerworksConstraints?.lockedMatColorId ?? 'archival-ivory',
+    glazingId: config.finerworksConstraints?.lockedGlazingId ?? 'clear-acrylic',
+  });
+
+  const handleFinerWorksModeSelect = (
+    mode: FinerWorksPromptConstraintConfig['mode']
+  ) => {
+    if (mode === 'curator-selects-finerworks') {
+      applyStructuredConfigChange({
+        finerworksConstraints: {
+          ...(config.finerworksConstraints ?? {}),
+          mode: 'curator-selects-finerworks',
+        },
+      });
+    } else {
+      applyStructuredConfigChange({
+        finerworksConstraints: {
+          mode: 'user-locked-finerworks',
+          lockedMediaId: config.finerworksConstraints?.lockedMediaId ?? 42,
+          lockedSubstrateSlug:
+            config.finerworksConstraints?.lockedSubstrateSlug ??
+            'hahnemuhle-etching-310gsm',
+          lockedFrameId:
+            config.finerworksConstraints?.lockedFrameId ?? 'natural-white-oak',
+          lockedMatWidthId:
+            config.finerworksConstraints?.lockedMatWidthId ?? '1.5in',
+          lockedMatColorId:
+            config.finerworksConstraints?.lockedMatColorId ?? 'archival-ivory',
+          lockedGlazingId:
+            config.finerworksConstraints?.lockedGlazingId ?? 'clear-acrylic',
+          lockedSizeId: config.finerworksConstraints?.lockedSizeId ?? '24x36',
+        },
+      });
+    }
+  };
+
+  const handleLockedMediaChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const nextMedia = getFinerWorksMediaById(Number(event.target.value));
+    const prev = config.finerworksConstraints;
+    applyStructuredConfigChange({
+      finerworksConstraints: {
+        mode: 'user-locked-finerworks',
+        lockedMediaId: nextMedia.mediaId,
+        lockedSubstrateSlug: nextMedia.substrateSlug,
+        lockedFrameId: prev?.lockedFrameId ?? 'natural-white-oak',
+        lockedMatWidthId: !nextMedia.canMat
+          ? 'none'
+          : (prev?.lockedMatWidthId ?? '1.5in'),
+        lockedMatColorId: prev?.lockedMatColorId ?? 'archival-ivory',
+        lockedGlazingId: !nextMedia.canMat
+          ? 'none'
+          : (prev?.lockedGlazingId ?? 'clear-acrylic'),
+        lockedSizeId: prev?.lockedSizeId ?? '24x36',
+      },
+    });
+  };
+
+  const handleLockedFrameChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const nextProfileId = event.target.value as FrameProfileId;
+    const nextFrame = getFinerWorksFrameByProfileId(nextProfileId);
+    const prev = config.finerworksConstraints;
+    applyStructuredConfigChange({
+      finerworksConstraints: {
+        mode: 'user-locked-finerworks',
+        lockedMediaId: prev?.lockedMediaId ?? 42,
+        lockedSubstrateSlug:
+          prev?.lockedSubstrateSlug ?? 'hahnemuhle-etching-310gsm',
+        lockedFrameId: nextFrame.profileId,
+        lockedMatWidthId: !nextFrame.allowMatting
+          ? 'none'
+          : (prev?.lockedMatWidthId ?? '1.5in'),
+        lockedMatColorId: prev?.lockedMatColorId ?? 'archival-ivory',
+        lockedGlazingId: !nextFrame.allowMatting
+          ? 'none'
+          : (prev?.lockedGlazingId ?? 'clear-acrylic'),
+        lockedSizeId: prev?.lockedSizeId ?? '24x36',
+      },
+    });
+  };
+
+  const handleLockedMatChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const nextMatWidthId = event.target.value as MatWidthId;
+    const prev = config.finerworksConstraints;
+    applyStructuredConfigChange({
+      finerworksConstraints: {
+        mode: 'user-locked-finerworks',
+        lockedMediaId: prev?.lockedMediaId ?? 42,
+        lockedSubstrateSlug:
+          prev?.lockedSubstrateSlug ?? 'hahnemuhle-etching-310gsm',
+        lockedFrameId: prev?.lockedFrameId ?? 'natural-white-oak',
+        lockedMatWidthId: nextMatWidthId,
+        lockedMatColorId: prev?.lockedMatColorId ?? 'archival-ivory',
+        lockedGlazingId: prev?.lockedGlazingId ?? 'clear-acrylic',
+        lockedSizeId: prev?.lockedSizeId ?? '24x36',
+      },
+    });
+  };
+
+  const handleLockedSizeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const nextSizeId = event.target.value as FinerWorksStandardSizeId;
+    const prev = config.finerworksConstraints;
+    applyStructuredConfigChange({
+      finerworksConstraints: {
+        mode: 'user-locked-finerworks',
+        lockedMediaId: prev?.lockedMediaId ?? 42,
+        lockedSubstrateSlug:
+          prev?.lockedSubstrateSlug ?? 'hahnemuhle-etching-310gsm',
+        lockedFrameId: prev?.lockedFrameId ?? 'natural-white-oak',
+        lockedMatWidthId: prev?.lockedMatWidthId ?? '1.5in',
+        lockedMatColorId: prev?.lockedMatColorId ?? 'archival-ivory',
+        lockedGlazingId: prev?.lockedGlazingId ?? 'clear-acrylic',
+        lockedSizeId: nextSizeId,
+      },
     });
   };
 
@@ -934,6 +1110,250 @@ export const AiPromptConfigurator: React.FC<AiPromptConfiguratorProps> = ({
             <p className="text-xs text-[#6E6559]">
               Pre-existing furniture and room dimensions are strictly preserved automatically across every viewpoint.
             </p>
+          </div>
+
+          {/* 3.5 Archival Print & Frame Options — Progressive Disclosure (Taste Directive #3) */}
+          <div
+            data-testid="finerworks-pre-config-section"
+            className="space-y-3 rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] p-4"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="text-xs font-semibold uppercase tracking-wider text-[#4A3B32]">
+                3.5 Archival Print &amp; Frame Options
+              </label>
+              <span className="rounded-full border border-[#DFD7C8] bg-[#F5F0E6] px-2.5 py-0.5 font-mono text-[10px] font-semibold text-[#9E5A3C]">
+                Atelier Vue Archival Catalog
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                data-testid="finerworks-mode-curator"
+                aria-pressed={activeFwMode === 'curator-selects-finerworks'}
+                onClick={() => handleFinerWorksModeSelect('curator-selects-finerworks')}
+                className={`min-h-[44px] w-full rounded-xl border p-3.5 text-left transition-all ${
+                  activeFwMode === 'curator-selects-finerworks'
+                    ? 'border-[#9E5A3C] bg-[#9E5A3C]/10 ring-1 ring-[#9E5A3C] text-[#1F1C18]'
+                    : 'border-[#DFD7C8] bg-[#F5F0E6] hover:border-[#B56543] text-[#4A3B32]'
+                }`}
+              >
+                <div className="font-semibold text-xs sm:text-sm text-[#1F1C18]">
+                  Curator Selects Optimal Archival Edition (Recommended)
+                </div>
+                <p className="mt-0.5 text-xs text-[#4A3B32]">
+                  Automatically matches substrate, frame profile &amp; scale to your walls.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                data-testid="finerworks-mode-locked"
+                aria-pressed={activeFwMode === 'user-locked-finerworks'}
+                onClick={() => handleFinerWorksModeSelect('user-locked-finerworks')}
+                className={`min-h-[44px] w-full rounded-xl border p-3.5 text-left transition-all ${
+                  activeFwMode === 'user-locked-finerworks'
+                    ? 'border-[#9E5A3C] bg-[#9E5A3C]/10 ring-1 ring-[#9E5A3C] text-[#1F1C18]'
+                    : 'border-[#DFD7C8] bg-[#F5F0E6] hover:border-[#B56543] text-[#4A3B32]'
+                }`}
+              >
+                <div className="font-semibold text-xs sm:text-sm text-[#1F1C18]">
+                  Lock Specific Archival Options Before Generation
+                </div>
+                <p className="mt-0.5 text-xs text-[#4A3B32]">
+                  Pre-lock exact archival substrate, moulding, rag mat &amp; size.
+                </p>
+              </button>
+            </div>
+
+            {activeFwMode === 'curator-selects-finerworks' ? (
+              <div
+                data-testid="finerworks-curator-summary-bar"
+                className="flex items-center gap-2 rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-3.5 py-2.5 text-xs font-medium text-[#4A3B32]"
+              >
+                <span className="h-2 w-2 shrink-0 rounded-full bg-[#9E5A3C]" />
+                <span>
+                  AI Curator harmonizes archival substrate, museum frame moulding &amp; proportion to your room
+                </span>
+              </div>
+            ) : (
+              <div className="space-y-3 pt-1">
+                <div
+                  data-testid="finerworks-locked-options-grid"
+                  className="grid grid-cols-1 sm:grid-cols-2 gap-3"
+                >
+                  {/* 1. Archival Substrate */}
+                  <div className="space-y-1">
+                    <label
+                      htmlFor="finerworks-lock-media-select"
+                      className="block text-xs font-medium text-[#4A3B32]"
+                    >
+                      Archival Substrate
+                    </label>
+                    <select
+                      id="finerworks-lock-media-select"
+                      data-testid="finerworks-lock-media-select"
+                      value={String(selectedMedia.mediaId)}
+                      onChange={handleLockedMediaChange}
+                      className="min-h-[44px] w-full truncate rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] pl-3 pr-8 py-2 text-xs sm:text-sm text-[#1F1C18] focus:border-[#9E5A3C] focus:outline-none"
+                    >
+                      {FINERWORKS_MEDIA_SPECS.map((media) => (
+                        <option key={media.mediaId} value={String(media.mediaId)}>
+                          {media.shortName}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* 2. Museum Frame Moulding (6 Curated Signatures + All 27 Collections / 231 Mouldings) */}
+                  <div className="space-y-1">
+                    <label
+                      htmlFor="finerworks-lock-frame-select"
+                      className="block text-xs font-medium text-[#4A3B32]"
+                    >
+                      Museum Frame Moulding ({FINERWORKS_FRAME_COLLECTIONS.length} Collections ·{' '}
+                      {FINERWORKS_ALL_231_FRAMES.length} Mouldings)
+                    </label>
+                    <select
+                      id="finerworks-lock-frame-select"
+                      data-testid="finerworks-lock-frame-select"
+                      value={selectedFrame.profileId}
+                      onChange={handleLockedFrameChange}
+                      className="min-h-[44px] w-full truncate rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] pl-3 pr-8 py-2 text-xs sm:text-sm text-[#1F1C18] focus:border-[#9E5A3C] focus:outline-none"
+                    >
+                      <optgroup label="Curated Gallery Signatures (6)">
+                        {FINERWORKS_FRAME_MOULDINGS.slice(0, 6).map((frame) => (
+                          <option key={frame.profileId} value={frame.profileId}>
+                            {frame.name} ({frame.thicknessInches}&quot; face)
+                          </option>
+                        ))}
+                      </optgroup>
+                      {FINERWORKS_FRAME_COLLECTIONS.map((col) => {
+                        const colFrames = FINERWORKS_ALL_231_FRAMES.filter(
+                          (f) => f.collectionSlug === col.slug
+                        );
+                        return (
+                          <optgroup
+                            key={col.collectionId}
+                            label={`${col.title} (${colFrames.length} Mouldings)`}
+                          >
+                            {colFrames.map((frame) => (
+                              <option key={frame.profileId} value={frame.profileId}>
+                                {frame.name} · SKU {frame.sku} ({frame.thicknessInches}&quot; face)
+                              </option>
+                            ))}
+                          </optgroup>
+                        );
+                      })}
+                    </select>
+                  </div>
+
+                  {/* 3. 4-Ply Rag Mat Border */}
+                  <div className="space-y-1">
+                    <label
+                      htmlFor="finerworks-lock-mat-select"
+                      className="block text-xs font-medium text-[#4A3B32]"
+                    >
+                      4-Ply Rag Mat Border
+                    </label>
+                    <select
+                      id="finerworks-lock-mat-select"
+                      data-testid="finerworks-lock-mat-select"
+                      value={
+                        !selectedMedia.canMat || !selectedFrame.allowMatting
+                          ? 'none'
+                          : currentLockedMatWidthId
+                      }
+                      disabled={!selectedMedia.canMat || !selectedFrame.allowMatting}
+                      onChange={handleLockedMatChange}
+                      className="min-h-[44px] w-full truncate rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] pl-3 pr-8 py-2 text-xs sm:text-sm text-[#1F1C18] disabled:opacity-50 focus:border-[#9E5A3C] focus:outline-none"
+                    >
+                      <option value="none">No Mat — Full-Bleed</option>
+                      <option value="1.5in">1.5&quot; Gallery Rag Mat</option>
+                      <option value="2.5in">2.5&quot; Museum Rag Mat</option>
+                      <option value="3.5in">3.5&quot; Salon Rag Mat</option>
+                    </select>
+                  </div>
+
+                  {/* 4. Target Archival Print Size */}
+                  <div className="space-y-1">
+                    <label
+                      htmlFor="finerworks-lock-size-select"
+                      className="block text-xs font-medium text-[#4A3B32]"
+                    >
+                      Target Archival Print Size
+                    </label>
+                    <select
+                      id="finerworks-lock-size-select"
+                      data-testid="finerworks-lock-size-select"
+                      value={selectedSize.id}
+                      onChange={handleLockedSizeChange}
+                      className="min-h-[44px] w-full truncate rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] pl-3 pr-8 py-2 text-xs sm:text-sm text-[#1F1C18] focus:border-[#9E5A3C] focus:outline-none"
+                    >
+                      {FINERWORKS_SIZE_OPTIONS.filter((s) => s.id !== 'custom').map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.labelInches} — {s.scaleCategory}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Selected Frame 3D Corner Reference Sample Card */}
+                {selectedFrame.cornerImageUrl && (
+                  <div
+                    data-testid="locked-frame-corner-preview-card"
+                    className="flex items-center gap-3 rounded-xl border border-[#DFD7C8] bg-[#F5F0E6] p-3"
+                  >
+                    <img
+                      data-testid="locked-frame-corner-preview-img"
+                      src={selectedFrame.cornerImageUrl}
+                      alt={`${selectedFrame.name} 3D Corner Sample`}
+                      className="h-16 w-16 shrink-0 rounded-lg border border-black/15 object-cover"
+                    />
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-serif text-xs font-semibold text-[#1F1C18]">
+                          {selectedFrame.name}
+                        </span>
+                        <span className="rounded bg-[#1F1C18] px-1.5 py-0.5 font-mono text-[9px] font-semibold text-[#FAF6EE]">
+                          SKU {selectedFrame.sku || `FW-${selectedFrame.finerworksFrameId}`}
+                        </span>
+                        {selectedFrame.collectionName && (
+                          <span className="font-mono text-[10px] text-[#9E5A3C]">
+                            · {selectedFrame.collectionName}
+                          </span>
+                        )}
+                      </div>
+                      <p className="font-mono text-[10px] text-[#4A3B32]">
+                        {selectedFrame.thicknessInches}&quot; face ·{' '}
+                        {selectedFrame.depthInches}&quot; depth ·{' '}
+                        {selectedFrame.rabbetInches}&quot; rabbet
+                      </p>
+                      <p className="font-mono text-[10px] font-semibold text-[#9E5A3C]">
+                        ✓ 3D Catalogue Corner Reference Photo Included in AI Curation Direction
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                <div
+                  data-testid="finerworks-locked-sku-preview"
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-3.5 py-2 text-xs text-[#4A3B32]"
+                >
+                  <span>
+                    Locked Edition SKU:{' '}
+                    <strong className="font-mono text-[#1F1C18]">
+                      {lockedBuiltSpec.productCode}
+                    </strong>
+                  </span>
+                  <span className="font-mono text-[11px] text-[#9E5A3C]">
+                    Outer Frame: {lockedBuiltSpec.physicalDimensions.frameOuterWidthIn}&quot; ×{' '}
+                    {lockedBuiltSpec.physicalDimensions.frameOuterHeightIn}&quot;
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Optional Error Banner */}

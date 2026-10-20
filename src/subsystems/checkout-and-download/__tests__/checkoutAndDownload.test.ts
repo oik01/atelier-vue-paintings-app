@@ -21,6 +21,7 @@ import {
 import {
   AcquirePrintModal,
   buildPrintOrderManifestJson,
+  calculateFinerWorksOrderBreakdown,
   calculatePrintPricing,
   CheckoutAndOrderModal,
   clampStudioMarkupPercent,
@@ -32,6 +33,7 @@ import {
   DEFAULT_STUDIO_MARKUP_PERCENT,
   DIGITAL_MASTER_LICENSE_USD,
   EMPTY_SHIPPING_ADDRESS,
+  FinerWorksBrandAndSyncModal,
   getLastTriggeredDownload,
   loadAtelierV2State,
   MAT_COLOR_OPTIONS,
@@ -48,11 +50,18 @@ import {
   sanitizeDownloadFilename,
   sanitizeShippingText,
   saveAtelierV2State,
+  submitFinerWorksPrintOrder,
   triggerPrintFileDownload,
   V2_STORAGE_KEY,
   V2OrderConfirmation,
+  validateFinerWorksRecipientAddress,
   validateShippingAddress,
 } from '../index';
+import {
+  DEFAULT_WHITE_LABEL_BRAND_ID,
+  setActiveWhiteLabelBrand,
+  WHITE_LABEL_BRAND_LIST,
+} from '../../finerworks-catalog-sync';
 
 // Configure React 18/19 act environment for deterministic synchronous DOM updates
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -444,7 +453,7 @@ describe('V2 Subsystem 4 (checkout-and-download) — Independent Verification Su
 
       const initial = loadAtelierV2State();
       expect(initial.version).toBe(2);
-      expect(initial.preferredPartnerId).toBe('prodigi');
+      expect(initial.preferredPartnerId).toBe('finerworks');
       expect(initial.preferredMarkupPercent).toBe(18);
 
       const saveRes = saveAtelierV2State({
@@ -907,7 +916,8 @@ describe('V2 Subsystem 4 (checkout-and-download) — Independent Verification Su
       ) as HTMLElement;
       expect(receipt).not.toBeNull();
       expect(receipt.textContent).toContain('Clara Vance');
-      expect(receipt.textContent).toContain('FinerWorks Archival Lab');
+      expect(receipt.textContent).toContain('Atelier Vue Archival Lab');
+      expect(receipt.textContent?.toLowerCase()).not.toContain('finerworks');
 
       // Click Download Order Manifest (.JSON)
       const downloadManifestBtn = container.querySelector(
@@ -1109,5 +1119,402 @@ describe('V2 Subsystem 4 (checkout-and-download) — Independent Verification Su
       harness.unmount();
     });
   });
+
+  // =========================================================================
+  // 10. FinerWorks v3 Pricing, Carrier Shipping, Address Validation & Order Submission Engine
+  // =========================================================================
+  describe('10. FinerWorks v3 Pricing, Carrier Shipping, Address Validation & Order Submission Engine', () => {
+    beforeEach(() => {
+      setActiveWhiteLabelBrand(DEFAULT_WHITE_LABEL_BRAND_ID);
+    });
+
+    it('calculates FinerWorks v3 breakdown across standard sizes, custom dimensions, framing, matting, glazing, volume discounts (qty 1, 2, 5, 10), and shipping classes (EC, SD, EX, ON)', () => {
+      const stdBreakdown = calculateFinerWorksOrderBreakdown({
+        sizeId: '24x36',
+        frameId: 'natural-white-oak',
+        matWidthId: '2.5in',
+        matColorId: 'archival-ivory',
+        substrateId: 'hahnemuhle-etching-310gsm',
+        glazingId: 'clear-acrylic',
+        quantity: 1,
+        markupPercent: 18,
+        shippingClassCode: 'SD',
+        stateCode: 'NY',
+      });
+
+      expect(stdBreakdown.builtProduct.productCode).toContain('5M42');
+      expect(stdBreakdown.builtProduct.productCode).toContain('S24X36');
+      expect(stdBreakdown.builtProduct.productCode).toContain('F131');
+      expect(stdBreakdown.shippingQuotes.length).toBe(4);
+      expect(stdBreakdown.shippingQuotes.map((q) => q.shippingClassCode)).toEqual([
+        'EC',
+        'SD',
+        'EX',
+        'ON',
+      ]);
+      expect(stdBreakdown.selectedShippingQuote.shippingClassCode).toBe('SD');
+      expect(stdBreakdown.retailSubtotalUsd).toBe(
+        roundCents(stdBreakdown.wholesaleTotalUsd + stdBreakdown.studioMarkupDollarUsd)
+      );
+      expect(stdBreakdown.grandTotalUsd).toBe(
+        roundCents(
+          stdBreakdown.retailSubtotalUsd +
+            stdBreakdown.shippingRateUsd +
+            stdBreakdown.salesTaxUsd
+        )
+      );
+
+      // Custom caliper dimensions (e.g. 26" x 38")
+      const customBreakdown = calculateFinerWorksOrderBreakdown({
+        sizeId: '24x36',
+        customWidthIn: 26,
+        customHeightIn: 38,
+        frameId: 'american-black-walnut',
+        matWidthId: '1.5in',
+        glazingId: 'non-glare-museum-acrylic',
+        quantity: 1,
+        shippingClassCode: 'EX',
+      });
+      expect(customBreakdown.builtProduct.physicalDimensions.printWidthIn).toBe(26);
+      expect(customBreakdown.builtProduct.physicalDimensions.printHeightIn).toBe(38);
+      expect(customBreakdown.builtProduct.productCode).toContain('S26X38');
+      expect(customBreakdown.selectedShippingQuote.shippingClassCode).toBe('EX');
+
+      // Volume discount tiers: 1 (0%), 2 (5%), 5 (10%), 10 (15%)
+      const qty1 = calculateFinerWorksOrderBreakdown({
+        sizeId: '18x24',
+        frameId: 'unframed-canvas',
+        matWidthId: 'none',
+        quantity: 1,
+      });
+      const qty2 = calculateFinerWorksOrderBreakdown({
+        sizeId: '18x24',
+        frameId: 'unframed-canvas',
+        matWidthId: 'none',
+        quantity: 2,
+      });
+      const qty5 = calculateFinerWorksOrderBreakdown({
+        sizeId: '18x24',
+        frameId: 'unframed-canvas',
+        matWidthId: 'none',
+        quantity: 5,
+      });
+      const qty10 = calculateFinerWorksOrderBreakdown({
+        sizeId: '18x24',
+        frameId: 'unframed-canvas',
+        matWidthId: 'none',
+        quantity: 10,
+      });
+
+      expect(qty1.builtProduct.pricing.volumeDiscountPercent).toBe(0);
+      expect(qty2.builtProduct.pricing.volumeDiscountPercent).toBe(5);
+      expect(qty5.builtProduct.pricing.volumeDiscountPercent).toBe(10);
+      expect(qty10.builtProduct.pricing.volumeDiscountPercent).toBe(15);
+      expect(qty10.wholesaleTotalUsd / 10).toBeLessThan(qty1.wholesaleTotalUsd);
+
+      // Verify all 4 shipping classes (EC, SD, EX, ON) increase in speed/cost
+      const shipEc = calculateFinerWorksOrderBreakdown({
+        sizeId: '24x36',
+        frameId: 'natural-white-oak',
+        matWidthId: '2.5in',
+        shippingClassCode: 'EC',
+      });
+      const shipOn = calculateFinerWorksOrderBreakdown({
+        sizeId: '24x36',
+        frameId: 'natural-white-oak',
+        matWidthId: '2.5in',
+        shippingClassCode: 'ON',
+      });
+      expect(shipEc.selectedShippingQuote.shippingClassCode).toBe('EC');
+      expect(shipOn.selectedShippingQuote.shippingClassCode).toBe('ON');
+      expect(shipOn.shippingRateUsd).toBeGreaterThan(shipEc.shippingRateUsd);
+    });
+
+    it('validates recipient addresses via validateFinerWorksRecipientAddress and submits FinerWorks v3 orders with 50-char title truncation, test_mode: true, payment_token: "xxxx", white-label COA/packing slip, and zero URLs in manifest', async () => {
+      const invalidCheck = await validateFinerWorksRecipientAddress(EMPTY_SHIPPING_ADDRESS);
+      expect(invalidCheck.valid).toBe(false);
+      expect(Object.keys(invalidCheck.errors).length).toBeGreaterThan(0);
+
+      const validCheck = await validateFinerWorksRecipientAddress(SAMPLE_SHIPPING_ADDRESS);
+      expect(validCheck.valid).toBe(true);
+      expect(validCheck.normalizedAddress.stateOrProvince).toBe('NY');
+      expect(validCheck.finerworksStatus).toContain('Verified');
+
+      const longTitleVariation = createSampleVariation({
+        artworkTitle:
+          'Monumental Terracotta & Sunlit Travertine Horizon Study With Extended Curatorial Subtitle Beyond Fifty Characters',
+      });
+
+      const confirmation = await submitFinerWorksPrintOrder({
+        variation: longTitleVariation,
+        sizeId: '24x36',
+        frameId: 'natural-white-oak',
+        matWidthId: '2.5in',
+        matColorId: 'archival-ivory',
+        substrateId: 'hahnemuhle-etching-310gsm',
+        glazingId: 'clear-acrylic',
+        shippingAddress: SAMPLE_SHIPPING_ADDRESS,
+        shippingCode: 'EX',
+        giftMessage: 'For the Mercer Street Architectural Collection.',
+        brandId: 'galerie-vauban',
+        testMode: true,
+        markupPercent: 18,
+        quantity: 2,
+      });
+
+      expect(confirmation.artworkTitle.length).toBeLessThanOrEqual(50);
+      expect(confirmation.whiteLabelBrandName).toBe('Galerie Vauban');
+      expect(confirmation.finerworksProductCode).toContain('5M42');
+      expect(confirmation.shippingCarrier).toBe('FedEx');
+      expect(confirmation.packingSlipHtml).toContain('GALERIE VAUBAN');
+      expect(confirmation.packingSlipHtml).toContain('data-logo-dimensions="600x180"');
+      expect(confirmation.packingSlipHtml.toLowerCase()).not.toContain('finerworks');
+      expect(confirmation.coaHtml).toContain('Henri Delacroix');
+      expect(confirmation.coaHtml.toLowerCase()).not.toContain('finerworks');
+      expect(confirmation.partnerOrderManifestJson).not.toContain('http://');
+      expect(confirmation.partnerOrderManifestJson).not.toContain('https://');
+
+      const parsedManifest = JSON.parse(confirmation.partnerOrderManifestJson);
+      expect(parsedManifest.test_mode).toBe(true);
+      expect(parsedManifest.payment_token).toBe('xxxx');
+      expect(parsedManifest.product_title.length).toBeLessThanOrEqual(50);
+      expect(parsedManifest.logo_dims).toBe('600x180');
+      expect(parsedManifest.coa.brandId).toBe('galerie-vauban');
+    });
+  });
+
+  // =========================================================================
+  // 11. AcquirePrintModal FinerWorks v3 Checkout, Brand Picker, Carrier Rates & Packing Slip Preview
+  // =========================================================================
+  describe('11. AcquirePrintModal FinerWorks v3 Checkout, Brand Picker, Carrier Rates & Packing Slip Preview', () => {
+    it('supports switching brands via checkout-brand-picker-select, viewing checkout-finerworks-product-code, selecting carrier shipping options (EC, SD, EX, ON), entering a gift note, and toggling white-label-packing-slip-preview', () => {
+      setActiveWhiteLabelBrand('atelier-koma');
+      const variation = createSampleVariation();
+      const forbiddenPipelineRegex = /\b(screenshot|crop|cropped|cropping|bounding box|bbox)\b/i;
+      const forbiddenAiModelRegex = /\b(astra|gemini argon|gpt-6|gemini 4|nano banana|openrouter)\b/i;
+
+      const harness = mountElement(
+        React.createElement(AcquirePrintModal, {
+          isOpen: true,
+          initialMode: 'order-print',
+          variation,
+          sizeId: '24x36',
+          frameId: 'natural-white-oak',
+          matWidthId: '2.5in',
+        })
+      );
+
+      const { container } = harness;
+
+      // 1. Verify FinerWorks SKU product code badge is displayed
+      const skuBadge = container.querySelector(
+        '[data-testid="checkout-finerworks-product-code"]'
+      ) as HTMLElement;
+      expect(skuBadge).not.toBeNull();
+      expect(skuBadge.textContent).toContain('5M42');
+
+      // 2. Switch white-label brand via checkout-brand-picker-select
+      const brandSelect = container.querySelector(
+        '[data-testid="checkout-brand-picker-select"]'
+      ) as HTMLSelectElement;
+      expect(brandSelect).not.toBeNull();
+      expect(brandSelect.value).toBe('atelier-koma');
+
+      act(() => {
+        brandSelect.value = 'stillwater-press';
+        brandSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      expect(brandSelect.value).toBe('stillwater-press');
+      expect(container.textContent).toContain('Stillwater Press');
+
+      // 3. Verify all 4 carrier shipping options (EC, SD, EX, ON) exist and are selectable
+      const shippingGroup = container.querySelector(
+        '[data-testid="finerworks-shipping-options-group"]'
+      );
+      expect(shippingGroup).not.toBeNull();
+
+      for (const code of ['EC', 'SD', 'EX', 'ON'] as const) {
+        const optionBtn = container.querySelector(
+          `[data-testid="shipping-option-${code}"]`
+        ) as HTMLButtonElement;
+        expect(optionBtn).not.toBeNull();
+        act(() => {
+          optionBtn.click();
+        });
+        expect(optionBtn.getAttribute('aria-pressed')).toBe('true');
+      }
+
+      // 4. Enter collector gift note
+      const giftInput = container.querySelector(
+        '[data-testid="checkout-gift-message-input"]'
+      ) as HTMLInputElement;
+      expect(giftInput).not.toBeNull();
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value'
+      )?.set;
+      act(() => {
+        nativeInputValueSetter?.call(
+          giftInput,
+          'Dedicated to the Hudson River Private Collection'
+        );
+        giftInput.dispatchEvent(new Event('input', { bubbles: true }));
+        giftInput.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      expect(giftInput.value).toBe('Dedicated to the Hudson River Private Collection');
+
+      // 5. Toggle white-label packing slip & COA preview
+      const togglePreviewBtn = container.querySelector(
+        '[data-testid="toggle-packing-slip-preview-btn"]'
+      ) as HTMLButtonElement;
+      expect(togglePreviewBtn).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="white-label-packing-slip-preview"]')
+      ).toBeNull();
+
+      act(() => {
+        togglePreviewBtn.click();
+      });
+
+      const previewContainer = container.querySelector(
+        '[data-testid="white-label-packing-slip-preview"]'
+      ) as HTMLElement;
+      expect(previewContainer).not.toBeNull();
+      expect(previewContainer.innerHTML).toContain('width="600"');
+      expect(previewContainer.innerHTML).toContain('height="180"');
+      expect(previewContainer.textContent).toContain('STILLWATER PRESS');
+      expect(previewContainer.textContent).toContain(
+        'Dedicated to the Hudson River Private Collection'
+      );
+
+      // Verify zero <a> tags and zero forbidden AI/pipeline terms
+      expect(container.querySelectorAll('a').length).toBe(0);
+      expect(container.textContent || '').not.toMatch(forbiddenPipelineRegex);
+      expect(container.textContent || '').not.toMatch(forbiddenAiModelRegex);
+
+      harness.unmount();
+    });
+  });
+
+  // =========================================================================
+  // 12. FinerWorksBrandAndSyncModal 5-Brand Identity Picker & Auto-Sync Status Studio
+  // =========================================================================
+  describe('12. FinerWorksBrandAndSyncModal 5-Brand Identity Picker & Auto-Sync Status Studio', () => {
+    it('switches between all 5 white-label gallery brands, updates live 600x180 packing slip & COA previews, switches to tab-finerworks-sync-status, filters catalog items, and triggers manual sync', async () => {
+      setActiveWhiteLabelBrand('atelier-koma');
+      const selectedBrands: string[] = [];
+      let syncCompletedCount = 0;
+
+      const harness = mountElement(
+        React.createElement(FinerWorksBrandAndSyncModal, {
+          isOpen: true,
+          onSelectBrand: (brand) => selectedBrands.push(brand.id),
+          onSyncCatalogNow: () => {
+            syncCompletedCount++;
+          },
+        })
+      );
+
+      const { container } = harness;
+
+      expect(
+        container.querySelector('[data-testid="finerworks-brand-and-sync-modal"]')
+      ).not.toBeNull();
+
+      // 1. Verify all 5 brand cards exist and can be clicked
+      for (const brand of WHITE_LABEL_BRAND_LIST) {
+        const cardBtn = container.querySelector(
+          `[data-testid="brand-option-card-${brand.id}"]`
+        ) as HTMLButtonElement;
+        expect(cardBtn).not.toBeNull();
+
+        act(() => {
+          cardBtn.click();
+        });
+
+        expect(cardBtn.getAttribute('aria-pressed')).toBe('true');
+
+        const slipPreview = container.querySelector(
+          '[data-testid="brand-modal-packing-slip-preview"]'
+        ) as HTMLElement;
+        const coaPreview = container.querySelector(
+          '[data-testid="brand-modal-coa-preview"]'
+        ) as HTMLElement;
+
+        expect(slipPreview).not.toBeNull();
+        expect(coaPreview).not.toBeNull();
+        expect(slipPreview.textContent).toContain(brand.businessInfo.company_name);
+        expect(coaPreview.textContent).toContain(brand.coaSpec.chiefCuratorName);
+        expect(slipPreview.textContent?.toLowerCase()).not.toContain('finerworks');
+        expect(coaPreview.textContent?.toLowerCase()).not.toContain('finerworks');
+      }
+
+      expect(selectedBrands).toEqual([
+        'atelier-koma',
+        'galerie-vauban',
+        'werkstatt-neue',
+        'stillwater-press',
+        'the-nocturne-archive',
+      ]);
+
+      // 2. Switch to FinerWorks v3 Catalog & Price Sync tab
+      const syncTabBtn = container.querySelector(
+        '[data-testid="tab-finerworks-sync-status"]'
+      ) as HTMLButtonElement;
+      expect(syncTabBtn).not.toBeNull();
+
+      act(() => {
+        syncTabBtn.click();
+      });
+
+      expect(
+        container.querySelector('[data-testid="finerworks-sync-metrics-grid"]')
+      ).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="finerworks-media-specs-list"]')
+      ).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="finerworks-frame-mouldings-list"]')
+      ).not.toBeNull();
+
+      // 3. Filter catalog items via finerworks-catalog-search-input
+      const searchInput = container.querySelector(
+        '[data-testid="finerworks-catalog-search-input"]'
+      ) as HTMLInputElement;
+      expect(searchInput).not.toBeNull();
+
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value'
+      )?.set;
+      act(() => {
+        nativeSetter?.call(searchInput, 'ChromaLuxe');
+        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+        searchInput.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+
+      const mediaList = container.querySelector(
+        '[data-testid="finerworks-media-specs-list"]'
+      ) as HTMLElement;
+      expect(mediaList.textContent).toContain('ChromaLuxe');
+      expect(mediaList.textContent).toContain('2 of 10');
+
+      // 4. Trigger manual FinerWorks catalog sync
+      const triggerSyncBtn = container.querySelector(
+        '[data-testid="trigger-finerworks-sync-btn"]'
+      ) as HTMLButtonElement;
+      expect(triggerSyncBtn).not.toBeNull();
+
+      await act(async () => {
+        triggerSyncBtn.click();
+      });
+
+      expect(syncCompletedCount).toBe(1);
+      expect(container.querySelectorAll('a').length).toBe(0);
+
+      harness.unmount();
+    });
+  });
 });
+
 

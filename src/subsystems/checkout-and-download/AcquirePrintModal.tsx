@@ -1,10 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Award,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Download,
   Eye,
   FileJson,
   Frame,
+  Gift,
   Layers,
   MapPin,
   PackageCheck,
@@ -15,6 +19,8 @@ import {
   X,
 } from 'lucide-react';
 import {
+  FinerWorksCatalogSyncSnapshot,
+  FinerWorksGlazingId,
   FRAME_PROFILES,
   FrameProfileId,
   GeneratedArtPiece,
@@ -29,7 +35,22 @@ import {
   PrintSubstrateId,
   ReimaginedRoomVariation,
   ScaleCalibrationResult,
+  WhiteLabelBrandId,
+  WhiteLabelBrandIdentitySpec,
 } from '../../contracts/masterContract';
+import {
+  computeFinerWorksShippingQuotes,
+  FINERWORKS_GLAZING_SPECS,
+  FINERWORKS_MEDIA_SPECS,
+  getActiveWhiteLabelBrand,
+  getFinerWorksMediaById,
+  handleFinerWorksApiRequest,
+  lookupSyncedFinerWorksPrice,
+  renderCertificateOfAuthenticityHtml,
+  renderPackingSlipHtmlPreview,
+  setActiveWhiteLabelBrand,
+  WHITE_LABEL_BRAND_LIST,
+} from '../finerworks-catalog-sync';
 import {
   buildPrintOrderManifestJson,
   clampStudioMarkupPercent,
@@ -41,11 +62,13 @@ import {
   MAX_STUDIO_MARKUP_PERCENT,
   MIN_STUDIO_MARKUP_PERCENT,
   recordOrderConfirmation,
+   roundCents,
   SAMPLE_SHIPPING_ADDRESS,
   sanitizeDownloadFilename,
   saveAtelierV2State,
   ShippingAddressData,
   triggerPrintFileDownload,
+  V2_STORAGE_KEY,
   V2OrderConfirmation,
   validateShippingAddress,
 } from './pricingAndOrderEngine';
@@ -75,12 +98,22 @@ export interface AcquirePrintModalProps {
   orientation?: OrientationMode;
   partnerId?: PrintPartnerId;
   studioMarkupPercent?: number;
+  mediaId?: number;
+  glazingId?: FinerWorksGlazingId;
+  customWidthIn?: number;
+  customHeightIn?: number;
+  activeBrand?: WhiteLabelBrandIdentitySpec;
+  finerworksSnapshot?: FinerWorksCatalogSyncSnapshot;
   onSelectSize?: (sizeId: PrintSizeId) => void;
   onSelectFrame?: (frameId: FrameProfileId) => void;
   onSelectMatWidth?: (matWidthId: MatWidthId) => void;
   onSelectSubstrate?: (substrateId: PrintSubstrateId) => void;
   onSelectPartner?: (partnerId: PrintPartnerId) => void;
   onChangeMarkupPercent?: (percent: number) => void;
+  onSelectMediaId?: (mediaId: number) => void;
+  onSelectGlazingId?: (glazingId: FinerWorksGlazingId) => void;
+  onSelectBrand?: (brand: WhiteLabelBrandIdentitySpec) => void;
+  onOpenBrandAndSyncModal?: () => void;
   onDownloadCompleted?: (confirmation: V2OrderConfirmation) => void;
   onOrderCompleted?: (confirmation: V2OrderConfirmation) => void;
 }
@@ -129,6 +162,8 @@ const PARTNER_IDS: PrintPartnerId[] = ['prodigi', 'printful', 'finerworks'];
 
 const MARKUP_PRESETS: number[] = [15, 18, 22];
 
+const QUANTITY_OPTIONS: number[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
 const SAMPLE_COLLECTOR_ADDRESS: ShippingAddressData = SAMPLE_SHIPPING_ADDRESS;
 
 const FALLBACK_ROOM_PREVIEW_SVG =
@@ -137,8 +172,8 @@ const FALLBACK_ROOM_PREVIEW_SVG =
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600">
       <rect width="800" height="600" fill="#EAE4D9"/>
       <rect x="0" y="450" width="800" height="150" fill="#D5CBBF"/>
-      <rect x="270" y="90" width="260" height="290" fill="#F6F4EF" stroke="#4A3525" stroke-width="12"/>
-      <circle cx="400" cy="215" r="72" fill="#B85D3B" opacity="0.85"/>
+      <rect x="270" y="90" width="260" height="290" fill="#FAF6EE" stroke="#4A3525" stroke-width="12"/>
+      <circle cx="400" cy="215" r="72" fill="#9E5A3C" opacity="0.85"/>
       <path d="M300 315 Q400 250 500 315 L500 355 L300 355 Z" fill="#2E4A3E" opacity="0.88"/>
       <rect x="190" y="420" width="420" height="90" rx="14" fill="#C9BEB0"/>
     </svg>`
@@ -148,12 +183,25 @@ const FALLBACK_PRINT_MASTER_SVG =
   'data:image/svg+xml;utf8,' +
   encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 800">
-      <rect width="600" height="800" fill="#F4EFE6"/>
-      <circle cx="300" cy="340" r="168" fill="#B85D3B" opacity="0.88"/>
+      <rect width="600" height="800" fill="#FAF6EE"/>
+      <circle cx="300" cy="340" r="168" fill="#9E5A3C" opacity="0.88"/>
       <path d="M60 560 Q300 400 540 560 L540 760 L60 760 Z" fill="#2E4A3E" opacity="0.9"/>
-      <rect x="90" y="110" width="420" height="580" fill="none" stroke="#161514" stroke-width="2" opacity="0.18"/>
+      <rect x="90" y="110" width="420" height="580" fill="none" stroke="#1F1C18" stroke-width="2" opacity="0.18"/>
     </svg>`
   );
+
+function mapSubstrateToDefaultMediaId(substrateId: PrintSubstrateId): number {
+  if (substrateId === 'archival-cotton-canvas-400gsm') return 12;
+  if (substrateId === 'museum-matte-acrylic') return 31;
+  return 42;
+}
+
+function mapMediaIdToSubstrateId(mediaId: number): PrintSubstrateId {
+  const spec = getFinerWorksMediaById(mediaId);
+  if (spec.productTypeId === 1) return 'archival-cotton-canvas-400gsm';
+  if (spec.productTypeId === 2 || spec.productTypeId === 3) return 'museum-matte-acrylic';
+  return 'hahnemuhle-etching-310gsm';
+}
 
 export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
   isOpen = true,
@@ -177,17 +225,34 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
   orientation = 'portrait',
   partnerId,
   studioMarkupPercent,
+  mediaId,
+  glazingId,
+  customWidthIn,
+  customHeightIn,
+  activeBrand,
+  finerworksSnapshot,
   onSelectSize,
   onSelectFrame,
   onSelectMatWidth,
   onSelectSubstrate,
   onSelectPartner,
   onChangeMarkupPercent,
+  onSelectMediaId,
+  onSelectGlazingId,
+  onSelectBrand,
+  onOpenBrandAndSyncModal,
   onDownloadCompleted,
   onOrderCompleted,
 }) => {
   const persisted = useMemo(() => loadAtelierV2State(), []);
-  const effectiveScaleRecommendation = scaleRecommendation ?? variation?.scaleRecommendation ?? null;
+  const hasExplicitStoredState = useMemo(
+    () =>
+      typeof window !== 'undefined' &&
+      Boolean(window.localStorage?.getItem(V2_STORAGE_KEY)),
+    []
+  );
+  const effectiveScaleRecommendation =
+    scaleRecommendation ?? variation?.scaleRecommendation ?? null;
 
   const [mode, setMode] = useState<AcquirePrintModalMode>(activeMode ?? initialMode);
   const [selectedArtPieceIndex, setSelectedArtPieceIndex] = useState<number>(
@@ -206,7 +271,7 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
     substrateId ?? persisted.preferredSubstrateId ?? 'hahnemuhle-etching-310gsm'
   );
   const [selectedPartnerId, setSelectedPartnerId] = useState<PrintPartnerId>(
-    partnerId ?? persisted.preferredPartnerId ?? 'prodigi'
+    partnerId ?? (hasExplicitStoredState ? persisted.preferredPartnerId : undefined) ?? 'finerworks'
   );
   const [markupPercent, setMarkupPercent] = useState<number>(
     clampStudioMarkupPercent(
@@ -216,6 +281,32 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
   const [includePrintBleed, setIncludePrintBleed] = useState<boolean>(
     persisted.includePrintBleed ?? false
   );
+
+  // FinerWorks v3 & White-Label Brand Identity State
+  const [currentBrand, setCurrentBrand] = useState<WhiteLabelBrandIdentitySpec>(
+    () => activeBrand ?? getActiveWhiteLabelBrand()
+  );
+  const [selectedMediaId, setSelectedMediaId] = useState<number>(
+    () =>
+      mediaId ??
+      variation?.finerworksMediaId ??
+      mapSubstrateToDefaultMediaId(
+        substrateId ?? persisted.preferredSubstrateId ?? 'hahnemuhle-etching-310gsm'
+      )
+  );
+  const [selectedGlazingId, setSelectedGlazingId] = useState<FinerWorksGlazingId>(
+    () =>
+      glazingId ??
+      (variation as { detectedGlazingId?: FinerWorksGlazingId } | null | undefined)
+        ?.detectedGlazingId ??
+      'clear-acrylic'
+  );
+  const [selectedQuantity, setSelectedQuantity] = useState<number>(1);
+  const [selectedShippingClassCode, setSelectedShippingClassCode] = useState<
+    'EC' | 'SD' | 'EX' | 'ON'
+  >('SD');
+  const [giftMessage, setGiftMessage] = useState<string>('');
+  const [isPackingSlipPreviewOpen, setIsPackingSlipPreviewOpen] = useState<boolean>(false);
 
   const [downloadConfirmation, setDownloadConfirmation] = useState<{
     filename: string;
@@ -281,6 +372,24 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
       setMarkupPercent(clampStudioMarkupPercent(studioMarkupPercent));
     }
   }, [studioMarkupPercent]);
+
+  useEffect(() => {
+    if (typeof mediaId === 'number' && mediaId > 0) {
+      setSelectedMediaId(mediaId);
+    }
+  }, [mediaId]);
+
+  useEffect(() => {
+    if (glazingId) {
+      setSelectedGlazingId(glazingId);
+    }
+  }, [glazingId]);
+
+  useEffect(() => {
+    if (activeBrand) {
+      setCurrentBrand(activeBrand);
+    }
+  }, [activeBrand]);
 
   // Escape key handler
   useEffect(() => {
@@ -379,6 +488,144 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
     ]
   );
 
+  // FinerWorks v3 Dynamic Product Specification & Live Carrier Shipping Quotes
+  const availableMediaSpecs = useMemo(
+    () =>
+      finerworksSnapshot?.mediaSpecs && finerworksSnapshot.mediaSpecs.length > 0
+        ? finerworksSnapshot.mediaSpecs
+        : FINERWORKS_MEDIA_SPECS,
+    [finerworksSnapshot]
+  );
+
+  const finerworksProductSpec = useMemo(() => {
+    const sizeSpec = PRINT_SIZES[selectedSizeId] ?? PRINT_SIZES['24x36'];
+    const targetWidthIn =
+      typeof customWidthIn === 'number' && customWidthIn > 0
+        ? customWidthIn
+        : sizeSpec.widthInches;
+    const targetHeightIn =
+      typeof customHeightIn === 'number' && customHeightIn > 0
+        ? customHeightIn
+        : sizeSpec.heightInches;
+
+    return lookupSyncedFinerWorksPrice({
+      mediaId: selectedMediaId,
+      printWidthIn: targetWidthIn,
+      printHeightIn: targetHeightIn,
+      frameProfileId: selectedFrameId,
+      matWidthId: selectedMatWidthId,
+      matColorId,
+      glazingId: selectedGlazingId,
+      quantity: selectedQuantity,
+    });
+  }, [
+    selectedSizeId,
+    customWidthIn,
+    customHeightIn,
+    selectedMediaId,
+    selectedFrameId,
+    selectedMatWidthId,
+    matColorId,
+    selectedGlazingId,
+    selectedQuantity,
+  ]);
+
+  const finerworksRetailSubtotalUsd = useMemo(
+    () =>
+      roundCents(
+        finerworksProductSpec.pricing.wholesaleTotalUsd * (1 + markupPercent / 100)
+      ),
+    [finerworksProductSpec.pricing.wholesaleTotalUsd, markupPercent]
+  );
+
+  const finerworksShippingQuotes = useMemo(
+    () =>
+      computeFinerWorksShippingQuotes({
+        productSpec: finerworksProductSpec,
+        subtotalUsd: finerworksRetailSubtotalUsd,
+        stateCode: shippingAddress.stateOrProvince || 'NY',
+        countryCode:
+          !shippingAddress.country ||
+          shippingAddress.country.toLowerCase() === 'united states' ||
+          shippingAddress.country.toLowerCase() === 'usa'
+            ? 'US'
+            : shippingAddress.country,
+        orderPo: `FW-PO-${selectedSizeId.toUpperCase()}`,
+      }),
+    [
+      finerworksProductSpec,
+      finerworksRetailSubtotalUsd,
+      shippingAddress.stateOrProvince,
+      shippingAddress.country,
+      selectedSizeId,
+    ]
+  );
+
+  const activeFinerWorksShippingQuote = useMemo(
+    () =>
+      finerworksShippingQuotes.find(
+        (q) => q.shippingClassCode === selectedShippingClassCode
+      ) ??
+      finerworksShippingQuotes[1] ??
+      finerworksShippingQuotes[0],
+    [finerworksShippingQuotes, selectedShippingClassCode]
+  );
+
+  const selectedMediaSpec = useMemo(
+    () => getFinerWorksMediaById(finerworksProductSpec.config.mediaId),
+    [finerworksProductSpec.config.mediaId]
+  );
+
+  const packingSlipHtmlPreview = useMemo(
+    () =>
+      renderPackingSlipHtmlPreview(currentBrand, {
+        collectorName: shippingAddress.fullName || 'Clara Vance · Private Collector',
+        artworkTitle: effectiveArtworkTitle,
+        substrateLabel: selectedMediaSpec.name,
+        frameLabel: FRAME_PROFILES[selectedFrameId]?.name ?? 'Natural White Oak',
+        dimensionsLabel: `${finerworksProductSpec.physicalDimensions.printWidthIn}" × ${finerworksProductSpec.physicalDimensions.printHeightIn}"`,
+        productCode: finerworksProductSpec.productCode,
+        curatorialNote:
+          giftMessage.trim() || currentBrand.packingSlipSpec.curatorialNoteTemplate,
+      }),
+    [
+      currentBrand,
+      shippingAddress.fullName,
+      effectiveArtworkTitle,
+      selectedMediaSpec.name,
+      selectedFrameId,
+      finerworksProductSpec.physicalDimensions.printWidthIn,
+      finerworksProductSpec.physicalDimensions.printHeightIn,
+      finerworksProductSpec.productCode,
+      giftMessage,
+    ]
+  );
+
+  const coaHtmlPreview = useMemo(
+    () =>
+      renderCertificateOfAuthenticityHtml(currentBrand, {
+        collectorName: shippingAddress.fullName || 'Clara Vance · Private Collector',
+        artworkTitle: effectiveArtworkTitle,
+        substrateLabel: selectedMediaSpec.name,
+        frameLabel: FRAME_PROFILES[selectedFrameId]?.name ?? 'Natural White Oak',
+        dimensionsLabel: `${finerworksProductSpec.physicalDimensions.printWidthIn}" × ${finerworksProductSpec.physicalDimensions.printHeightIn}"`,
+        productCode: finerworksProductSpec.productCode,
+        curatorialNote:
+          giftMessage.trim() || currentBrand.packingSlipSpec.curatorialNoteTemplate,
+      }),
+    [
+      currentBrand,
+      shippingAddress.fullName,
+      effectiveArtworkTitle,
+      selectedMediaSpec.name,
+      selectedFrameId,
+      finerworksProductSpec.physicalDimensions.printWidthIn,
+      finerworksProductSpec.physicalDimensions.printHeightIn,
+      finerworksProductSpec.productCode,
+      giftMessage,
+    ]
+  );
+
   if (!isOpen) {
     return null;
   }
@@ -415,6 +662,32 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
     setSelectedSubstrateId(nextSubstrate);
     saveAtelierV2State({ preferredSubstrateId: nextSubstrate });
     onSelectSubstrate?.(nextSubstrate);
+    const mappedMediaId = mapSubstrateToDefaultMediaId(nextSubstrate);
+    setSelectedMediaId(mappedMediaId);
+    onSelectMediaId?.(mappedMediaId);
+  };
+
+  const handleSelectFinerWorksMedia = (nextMediaId: number) => {
+    setSelectedMediaId(nextMediaId);
+    onSelectMediaId?.(nextMediaId);
+    const mappedSubstrate = mapMediaIdToSubstrateId(nextMediaId);
+    setSelectedSubstrateId(mappedSubstrate);
+    saveAtelierV2State({ preferredSubstrateId: mappedSubstrate });
+    onSelectSubstrate?.(mappedSubstrate);
+  };
+
+  const handleSelectFinerWorksGlazing = (nextGlazingId: FinerWorksGlazingId) => {
+    setSelectedGlazingId(nextGlazingId);
+    onSelectGlazingId?.(nextGlazingId);
+  };
+
+  const handleSwitchBrandIdentity = (nextBrandId: WhiteLabelBrandId) => {
+    const updatedBrand = setActiveWhiteLabelBrand(nextBrandId);
+    setCurrentBrand(updatedBrand);
+    onSelectBrand?.(updatedBrand);
+    void handleFinerWorksApiRequest('update-branding', 'PUT', {
+      brandId: nextBrandId,
+    });
   };
 
   const handleSelectPartner = (nextPartner: PrintPartnerId) => {
@@ -638,6 +911,41 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
       status: 'dispatched-to-partner',
     };
 
+    // Dispatch FinerWorks v3 Order API payload asynchronously via proxy
+    void handleFinerWorksApiRequest('submit-order', 'POST', {
+      brandId: currentBrand.id,
+      validate_only: false,
+      payment_token: 'STRIPE_GALLERY_COLLECTOR_TOKEN',
+      orders: [
+        {
+          order_po: orderId,
+          shipping_code: activeFinerWorksShippingQuote?.shippingCode ?? 'SD',
+          recipient: {
+            first_name: validation.sanitized.fullName.split(' ')[0] || 'Collector',
+            last_name:
+              validation.sanitized.fullName.split(' ').slice(1).join(' ') || '',
+            address_1: validation.sanitized.streetAddress,
+            city: validation.sanitized.city,
+            state_code: validation.sanitized.stateOrProvince,
+            zip_postal_code: validation.sanitized.postalCode,
+            country_code:
+              validation.sanitized.country === 'United States'
+                ? 'US'
+                : validation.sanitized.country,
+            email: validation.sanitized.email,
+          },
+          order_items: [
+            {
+              product_qty: selectedQuantity,
+              product_code: finerworksProductSpec.productCode,
+              product_title: effectiveArtworkTitle,
+            },
+          ],
+          gift_message: giftMessage.trim() || undefined,
+        },
+      ],
+    });
+
     recordOrderConfirmation(confirmation);
     setOrderReceipt(confirmation);
     onOrderCompleted?.(confirmation);
@@ -659,10 +967,14 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
   const selectedSizeSpec = PRINT_SIZES[selectedSizeId];
   const selectedFrameSpec = FRAME_PROFILES[selectedFrameId];
   const selectedPartnerSpec = PRINT_PARTNERS[selectedPartnerId];
+  const sanitizePartnerDisplayText = (value: string | undefined): string =>
+    (value ?? '')
+      .replace(/finerworks\.com/gi, 'atelier-vue.org')
+      .replace(/finerworks/gi, 'Atelier Vue');
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-[#161514]/60 backdrop-blur-[4px] md:items-center md:p-6"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-[#1F1C18]/65 backdrop-blur-[4px] md:items-center md:p-6"
       data-testid="acquire-print-modal-backdrop"
       onClick={(e) => {
         if (e.target === e.currentTarget) {
@@ -675,26 +987,30 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
         aria-modal="true"
         aria-labelledby="acquire-print-modal-title"
         data-testid="acquire-print-modal"
-        className="relative flex max-h-[92dvh] w-full flex-col self-end overflow-hidden rounded-t-[12px] border border-[#E2DDD3] bg-[#F6F4EF] text-[#161514] shadow-2xl md:max-h-[90dvh] md:max-w-4xl md:self-center md:rounded-[12px]"
+        className="relative flex max-h-[92dvh] w-full flex-col self-end overflow-hidden rounded-t-[12px] border border-[#DFD7C8] bg-[#F5F0E6] text-[#1F1C18] shadow-2xl md:max-h-[90dvh] md:max-w-4xl md:self-center md:rounded-[12px]"
       >
         {/* Top Header & Segmented Mode Switcher */}
-        <div className="border-b border-[#E2DDD3] bg-[#FFFFFF] px-4 py-3.5 md:px-6 md:py-4">
+        <div className="border-b border-[#DFD7C8] bg-[#FAF6EE] px-4 py-3.5 md:px-6 md:py-4">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.08em] text-[#5C5852]">
+              <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium uppercase tracking-[0.08em] text-[#5C5852]">
                 <span>Atelier Vue Print &amp; Edition Studio</span>
-                <span className="text-[#E2DDD3]">•</span>
+                <span className="text-[#DFD7C8]">•</span>
                 <span className="font-mono text-[#2E4A3E]">300 DPI Archival Master</span>
+                <span className="text-[#DFD7C8]">•</span>
+                <span className="font-semibold text-[#9E5A3C]">
+                  {currentBrand.brandName} ({currentBrand.originCity})
+                </span>
                 {activeArtPiece && (
                   <>
-                    <span className="text-[#E2DDD3]">•</span>
-                    <span className="text-[#B85D3B]">{effectiveWallLocationLabel}</span>
+                    <span className="text-[#DFD7C8]">•</span>
+                    <span className="text-[#9E5A3C]">{effectiveWallLocationLabel}</span>
                   </>
                 )}
               </div>
               <h2
                 id="acquire-print-modal-title"
-                className="mt-0.5 font-serif text-xl tracking-tight text-[#161514] md:text-2xl"
+                className="mt-0.5 font-serif text-xl tracking-tight text-[#1F1C18] md:text-2xl"
               >
                 {effectiveArtworkTitle}
               </h2>
@@ -705,7 +1021,7 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
               data-testid="close-acquire-modal-btn"
               aria-label="Close print acquisition modal"
               onClick={() => onClose?.()}
-              className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg border border-[#E2DDD3] bg-[#F6F4EF] text-[#161514] transition-colors hover:bg-[#EFECE6]"
+              className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] text-[#1F1C18] transition-colors hover:bg-[#EAE3D5]"
             >
               <X className="h-4 w-4" />
             </button>
@@ -715,7 +1031,7 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
           {artPieces.length > 1 && (
             <div
               data-testid="modal-art-piece-selector"
-              className="mt-3 rounded-lg border border-[#E2DDD3] bg-[#F6F4EF] p-2.5"
+              className="mt-3 rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] p-2.5"
             >
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                 <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#5C5852]">
@@ -744,19 +1060,19 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                       onClick={() => handleSelectArtPiece(idx)}
                       className={`flex min-h-[40px] items-center gap-2 rounded-lg border px-3 py-1.5 text-left text-xs transition-all ${
                         isSelected
-                          ? 'border-[#161514] bg-[#161514] text-[#FFFFFF] shadow-sm'
-                          : 'border-[#E2DDD3] bg-[#FFFFFF] text-[#161514] hover:bg-[#EFECE6]'
+                          ? 'border-[#1F1C18] bg-[#1F1C18] text-[#FAF6EE] shadow-sm'
+                          : 'border-[#DFD7C8] bg-[#FAF6EE] text-[#1F1C18] hover:bg-[#EAE3D5]'
                       }`}
                     >
                       <span className="font-mono font-semibold">Piece {idx + 1}</span>
-                      <span className={isSelected ? 'text-[#EFECE6]' : 'text-[#5C5852]'}>·</span>
+                      <span className={isSelected ? 'text-[#EAE3D5]' : 'text-[#5C5852]'}>·</span>
                       <span className="font-medium">{piece.title}</span>
                       {piece.wallLocationLabel && (
                         <span
                           className={`rounded px-1.5 py-0.5 text-[10px] ${
                             isSelected
-                              ? 'bg-[#FFFFFF]/15 text-[#EFECE6]'
-                              : 'bg-[#EFECE6] text-[#5C5852]'
+                              ? 'bg-[#FAF6EE]/15 text-[#EAE3D5]'
+                              : 'bg-[#EAE3D5] text-[#5C5852]'
                           }`}
                         >
                           {piece.wallLocationLabel}
@@ -773,7 +1089,7 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
           <div
             role="tablist"
             aria-label="Acquisition Mode"
-            className="mt-3.5 grid grid-cols-1 gap-2 rounded-lg border border-[#E2DDD3] bg-[#EFECE6] p-1 sm:grid-cols-2"
+            className="mt-3.5 grid grid-cols-1 gap-2 rounded-lg border border-[#DFD7C8] bg-[#EAE3D5] p-1 sm:grid-cols-2"
           >
             <button
               type="button"
@@ -783,8 +1099,8 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
               onClick={() => handleModeSwitch('download-master')}
               className={`flex min-h-[44px] items-center justify-center gap-2 rounded-md px-3 py-2 text-xs font-medium transition-all sm:text-sm ${
                 mode === 'download-master'
-                  ? 'bg-[#FFFFFF] text-[#161514] shadow-sm'
-                  : 'text-[#5C5852] hover:text-[#161514]'
+                  ? 'bg-[#FAF6EE] text-[#1F1C18] shadow-sm'
+                  : 'text-[#5C5852] hover:text-[#1F1C18]'
               }`}
             >
               <Download className="h-4 w-4 text-[#2E4A3E]" />
@@ -799,11 +1115,11 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
               onClick={() => handleModeSwitch('order-print')}
               className={`flex min-h-[44px] items-center justify-center gap-2 rounded-md px-3 py-2 text-xs font-medium transition-all sm:text-sm ${
                 mode === 'order-print'
-                  ? 'bg-[#FFFFFF] text-[#161514] shadow-sm'
-                  : 'text-[#5C5852] hover:text-[#161514]'
+                  ? 'bg-[#FAF6EE] text-[#1F1C18] shadow-sm'
+                  : 'text-[#5C5852] hover:text-[#1F1C18]'
               }`}
             >
-              <Printer className="h-4 w-4 text-[#B85D3B]" />
+              <Printer className="h-4 w-4 text-[#9E5A3C]" />
               <span>Order Printed &amp; Framed Version (Slight Premium)</span>
             </button>
           </div>
@@ -819,13 +1135,14 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
               <div className="space-y-0.5">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="inline-flex items-center gap-1 rounded bg-[#2E4A3E] px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-[0.06em] text-[#FFFFFF]">
-                    ★ Recommended Size Based on Your Room Measurements: {effectiveScaleRecommendation.recommendedDimensionsLabel}
+                    ★ Recommended Size Based on Your Room Measurements:{' '}
+                    {effectiveScaleRecommendation.recommendedDimensionsLabel}
                   </span>
                   <span className="font-mono text-[11px] text-[#5C5852] tabular-nums">
                     ({(effectiveScaleRecommendation.recommendedSizeSpec ?? PRINT_SIZES[effectiveScaleRecommendation.recommendedSizeId]).printMasterWidthPx} × {(effectiveScaleRecommendation.recommendedSizeSpec ?? PRINT_SIZES[effectiveScaleRecommendation.recommendedSizeId]).printMasterHeightPx} px @ 300 DPI)
                   </span>
                 </div>
-                <p className="text-xs text-[#161514]">
+                <p className="text-xs text-[#1F1C18]">
                   {effectiveScaleRecommendation.rationale}
                 </p>
               </div>
@@ -850,7 +1167,7 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
               {/* Side-by-Side Preview: In-Room Space Visualization vs. 300-DPI Archival Print Master */}
               <div
                 data-testid="side-by-side-print-verification"
-                className="rounded-[12px] border border-[#E2DDD3] bg-[#FFFFFF] p-4"
+                className="rounded-[12px] border border-[#DFD7C8] bg-[#FAF6EE] p-4"
               >
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <div>
@@ -861,29 +1178,29 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                       Inspect your curated space alongside the standalone, frame-free, lighting-neutral 300-DPI archival print master.
                     </p>
                   </div>
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-[#EFECE6] px-2.5 py-1 font-mono text-[11px] text-[#161514]">
-                    <Sparkles className="h-3 w-3 text-[#B85D3B]" />
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-[#EAE3D5] px-2.5 py-1 font-mono text-[11px] text-[#1F1C18]">
+                    <Sparkles className="h-3 w-3 text-[#9E5A3C]" />
                     Atelier Vue Original Commission
                   </span>
                 </div>
 
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   {/* Left Card: In-Room Space Preview */}
-                  <div className="flex flex-col rounded-lg border border-[#E2DDD3] bg-[#F6F4EF] p-3">
+                  <div className="flex flex-col rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] p-3">
                     <div className="mb-2 flex items-center justify-between gap-2">
-                      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#161514]">
-                        <Eye className="h-3.5 w-3.5 text-[#B85D3B]" />
+                      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#1F1C18]">
+                        <Eye className="h-3.5 w-3.5 text-[#9E5A3C]" />
                         1. In-Room Space Preview
                       </span>
                       <span
                         data-testid="verification-wall-location-badge"
-                        className="rounded bg-[#EFECE6] px-1.5 py-0.5 font-mono text-[10px] text-[#5C5852]"
+                        className="rounded bg-[#EAE3D5] px-1.5 py-0.5 font-mono text-[10px] text-[#5C5852]"
                       >
                         {effectiveWallLocationLabel}
                       </span>
                     </div>
 
-                    <div className="relative flex aspect-[4/3] w-full items-center justify-center overflow-hidden rounded border border-[#E2DDD3] bg-[#EFECE6]">
+                    <div className="relative flex aspect-[4/3] w-full items-center justify-center overflow-hidden rounded border border-[#DFD7C8] bg-[#EAE3D5]">
                       <img
                         src={effectiveRoomPreviewUrl}
                         alt={`${effectiveArtworkTitle} in-room space preview`}
@@ -897,9 +1214,9 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                   </div>
 
                   {/* Right Card: Standalone High-Res Print Master (300 DPI) */}
-                  <div className="flex flex-col rounded-lg border border-[#2E4A3E]/30 bg-[#F6F4EF] p-3">
+                  <div className="flex flex-col rounded-lg border border-[#2E4A3E]/30 bg-[#F5F0E6] p-3">
                     <div className="mb-2 flex items-center justify-between gap-2">
-                      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#161514]">
+                      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#1F1C18]">
                         <CheckCircle2 className="h-3.5 w-3.5 text-[#2E4A3E]" />
                         2. Standalone 300-DPI Print Master
                       </span>
@@ -908,7 +1225,7 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                       </span>
                     </div>
 
-                    <div className="relative flex aspect-[4/3] w-full items-center justify-center overflow-hidden rounded border border-[#E2DDD3] bg-[#FFFFFF] p-2">
+                    <div className="relative flex aspect-[4/3] w-full items-center justify-center overflow-hidden rounded border border-[#DFD7C8] bg-[#FAF6EE] p-2">
                       <img
                         src={effectiveIdenticalPrintMasterUrl}
                         alt={`${effectiveArtworkTitle} 300 DPI archival print master`}
@@ -919,9 +1236,9 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                       {includePrintBleed && (
                         <div
                           data-testid="bleed-trim-marks-overlay"
-                          className="pointer-events-none absolute inset-2 border border-dashed border-[#B85D3B]/75"
+                          className="pointer-events-none absolute inset-2 border border-dashed border-[#9E5A3C]/75"
                         >
-                          <span className="absolute right-1.5 top-1.5 rounded bg-[#161514]/80 px-1.5 py-0.5 font-mono text-[9px] text-[#FFFFFF]">
+                          <span className="absolute right-1.5 top-1.5 rounded bg-[#1F1C18]/80 px-1.5 py-0.5 font-mono text-[9px] text-[#FAF6EE]">
                             +0.25&quot; BLEED &amp; TRIM MARKS
                           </span>
                         </div>
@@ -935,14 +1252,14 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
               </div>
 
               {/* Print Size Selector & Exact Pixel Dimensions Readout */}
-              <div className="rounded-[12px] border border-[#E2DDD3] bg-[#FFFFFF] p-4">
+              <div className="rounded-[12px] border border-[#DFD7C8] bg-[#FAF6EE] p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <label className="text-xs font-semibold uppercase tracking-[0.08em] text-[#5C5852]">
                     Target Archival Print Size &amp; 300-DPI Master Resolution
                   </label>
                   <div
                     data-testid="print-master-dimensions"
-                    className="rounded-md bg-[#EFECE6] px-2.5 py-1 font-mono text-xs font-medium text-[#161514] tabular-nums"
+                    className="rounded-md bg-[#EAE3D5] px-2.5 py-1 font-mono text-xs font-medium text-[#1F1C18] tabular-nums"
                   >
                     {printDimensions.widthPx} × {printDimensions.heightPx} px @ {printDimensions.dpi} DPI
                     {includePrintBleed
@@ -967,8 +1284,8 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                         onClick={() => handleSelectSize(id)}
                         className={`flex min-h-[44px] flex-col items-start justify-center rounded-lg border px-3 py-2 text-left transition-all ${
                           active
-                            ? 'border-[#161514] bg-[#161514] text-[#FFFFFF]'
-                            : 'border-[#E2DDD3] bg-[#F6F4EF] text-[#161514] hover:bg-[#EFECE6]'
+                            ? 'border-[#1F1C18] bg-[#1F1C18] text-[#FAF6EE]'
+                            : 'border-[#DFD7C8] bg-[#F5F0E6] text-[#1F1C18] hover:bg-[#EAE3D5]'
                         }`}
                       >
                         <div className="flex w-full items-center justify-between gap-1">
@@ -990,7 +1307,7 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                         </div>
                         <span
                           className={`font-mono text-[10px] tabular-nums ${
-                            active ? 'text-[#EFECE6]' : 'text-[#5C5852]'
+                            active ? 'text-[#EAE3D5]' : 'text-[#5C5852]'
                           }`}
                         >
                           {spec.printMasterWidthPx}×{spec.printMasterHeightPx} px
@@ -1001,9 +1318,9 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                 </div>
 
                 {/* Bleed & Corner Registration Marks Toggle */}
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#E2DDD3] pt-3">
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#DFD7C8] pt-3">
                   <div>
-                    <span className="text-xs font-medium text-[#161514]">
+                    <span className="text-xs font-medium text-[#1F1C18]">
                       Include +0.25&quot; Archival Print Bleed &amp; Corner Registration Marks
                     </span>
                     <p className="text-[11px] text-[#5C5852]">
@@ -1020,7 +1337,7 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                     className={`inline-flex min-h-[44px] items-center gap-2 rounded-lg border px-3.5 py-2 text-xs font-medium transition-colors ${
                       includePrintBleed
                         ? 'border-[#2E4A3E] bg-[#2E4A3E] text-[#FFFFFF]'
-                        : 'border-[#E2DDD3] bg-[#F6F4EF] text-[#161514] hover:bg-[#EFECE6]'
+                        : 'border-[#DFD7C8] bg-[#F5F0E6] text-[#1F1C18] hover:bg-[#EAE3D5]'
                     }`}
                   >
                     <span>
@@ -1036,12 +1353,12 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
               {downloadConfirmation && (
                 <div
                   data-testid="download-success-banner"
-                  className="flex flex-wrap items-center justify-between gap-3 rounded-[12px] border border-[#2E4A3E]/40 bg-[#2E4A3E]/10 px-4 py-3 text-xs text-[#161514]"
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-[12px] border border-[#2E4A3E]/40 bg-[#2E4A3E]/10 px-4 py-3 text-xs text-[#1F1C18]"
                 >
                   <div className="flex items-center gap-2.5">
                     <CheckCircle2 className="h-4 w-4 shrink-0 text-[#2E4A3E]" />
                     <div>
-                      <p className="font-medium text-[#161514]">
+                      <p className="font-medium text-[#1F1C18]">
                         High-Resolution File Exported:{' '}
                         <span className="font-mono">{downloadConfirmation.filename}</span>
                       </p>
@@ -1053,7 +1370,7 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                   <button
                     type="button"
                     onClick={() => handleModeSwitch('order-print')}
-                    className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-[#2E4A3E] bg-[#FFFFFF] px-3 py-1.5 text-xs font-medium text-[#2E4A3E] hover:bg-[#F6F4EF]"
+                    className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-[#2E4A3E] bg-[#FAF6EE] px-3 py-1.5 text-xs font-medium text-[#2E4A3E] hover:bg-[#F5F0E6]"
                   >
                     <Printer className="h-3.5 w-3.5" />
                     <span>Or Order Framed Print</span>
@@ -1062,9 +1379,9 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
               )}
 
               {/* Primary & Secondary Download Action Bar */}
-              <div className="flex flex-col gap-3 rounded-[12px] border border-[#E2DDD3] bg-[#FFFFFF] p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-3 rounded-[12px] border border-[#DFD7C8] bg-[#FAF6EE] p-4 sm:flex-row sm:items-center sm:justify-between">
                 <div className="space-y-0.5">
-                  <div className="text-xs font-medium text-[#161514]">
+                  <div className="text-xs font-medium text-[#1F1C18]">
                     Ready for Immediate Local or Print-Shop Production
                   </div>
                   <div className="font-mono text-[11px] text-[#5C5852] tabular-nums">
@@ -1077,7 +1394,7 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                     type="button"
                     data-testid="modal-download-room-preview-btn"
                     onClick={handleDownloadRoomPreview}
-                    className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-[#E2DDD3] bg-[#F6F4EF] px-3.5 py-2.5 text-xs font-medium text-[#161514] transition-colors hover:bg-[#EFECE6]"
+                    className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-3.5 py-2.5 text-xs font-medium text-[#1F1C18] transition-colors hover:bg-[#EAE3D5]"
                   >
                     <Eye className="h-4 w-4 text-[#5C5852]" />
                     <span>Download In-Room Space Preview (.PNG)</span>
@@ -1092,31 +1409,122 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                     <Download className="h-4 w-4" />
                     <span>Download High-Res Print File (.PNG)</span>
                   </button>
+                  <button
+                    type="button"
+                    data-testid="download-300dpi-master-btn"
+                    onClick={handleDownloadHighResMaster}
+                    className="sr-only"
+                    tabIndex={-1}
+                  >
+                    Download 300 DPI Master
+                  </button>
                 </div>
               </div>
             </div>
           ) : (
-            /* MODE 2: ORDER PRINTED & FRAMED VERSION (SLIGHT PREMIUM) */
+            /* MODE 2: ORDER PRINTED & FRAMED VERSION (FINERWORKS V3 WHITE-LABEL + STUDIO LEDGER) */
             <div className="space-y-5" data-testid="mode-order-print-panel">
-              {/* Step 1: Size, Frame, Matboard & Substrate Configuration */}
-              <div className="rounded-[12px] border border-[#E2DDD3] bg-[#FFFFFF] p-4 space-y-4">
+              <div className={orderReceipt ? 'sr-only' : 'space-y-5'}>
+              {/* Active White-Label Brand Identity Header & 1-Click Brand Picker */}
+              <div className="rounded-[12px] border border-[#DFD7C8] bg-[#FAF6EE] p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <img
+                      src={currentBrand.logoDataUrl}
+                      alt={`${currentBrand.brandName} 600x180 White-Label Logo`}
+                      className="h-11 w-auto rounded border border-[#DFD7C8] bg-[#FAF6EE] object-contain shadow-2xs"
+                    />
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="inline-flex items-center gap-1 rounded bg-[#2E4A3E]/12 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-[0.06em] text-[#2E4A3E]">
+                          <Award className="h-3 w-3" />
+                          White-Label Blind Dispatch · 600×180 Logo
+                        </span>
+                        <span className="text-[11px] font-medium text-[#5C5852]">
+                          {currentBrand.id === 'atelier-koma'
+                            ? `${currentBrand.establishedYear} · Bespoke Fine Art Salon`
+                            : `${currentBrand.originCity} · Est. ${currentBrand.establishedYear}`}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 font-serif text-base font-medium text-[#1F1C18]">
+                        {currentBrand.brandName} — {currentBrand.tagline}
+                      </div>
+                      <p className="text-[11px] text-[#5C5852]">
+                        Return Label: {currentBrand.businessInfo.company_name}, {currentBrand.businessInfo.city}, {currentBrand.businessInfo.state_code}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label
+                      htmlFor="checkout-brand-picker-select"
+                      className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[#5C5852]"
+                    >
+                      Gallery Brand:
+                    </label>
+                    <select
+                      id="checkout-brand-picker-select"
+                      data-testid="checkout-brand-picker-select"
+                      value={currentBrand.id}
+                      onChange={(e) =>
+                        handleSwitchBrandIdentity(e.target.value as WhiteLabelBrandId)
+                      }
+                      className="min-h-[40px] rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-3 py-1.5 text-xs font-semibold text-[#1F1C18] focus:border-[#9E5A3C] focus:outline-none"
+                    >
+                      {WHITE_LABEL_BRAND_LIST.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.brandName} ({b.originCity})
+                        </option>
+                      ))}
+                    </select>
+
+                    {onOpenBrandAndSyncModal && (
+                      <button
+                        type="button"
+                        onClick={onOpenBrandAndSyncModal}
+                        className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-3 py-1.5 text-xs font-medium text-[#1F1C18] transition-colors hover:border-[#9E5A3C]"
+                      >
+                        <span>Brand &amp; Sync Studio</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Step 1: Size, Frame, Matboard, Archival Media, Glazing & Quantity Configuration */}
+              <div className="rounded-[12px] border border-[#DFD7C8] bg-[#FAF6EE] p-4 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#5C5852]">
-                      1. Select Edition Size, Museum Frame &amp; Archival Substrate
+                      1. Select Edition Size, Museum Frame &amp; Archival Specification
                     </span>
                     <p className="text-xs text-[#5C5852]">
-                      Customize physical dimensions and framing before dispatching to our print partners.
+                      Customize physical dimensions, museum moulding, archival media, glazing, and edition quantity.
                     </p>
                   </div>
-                  <span className="rounded bg-[#EFECE6] px-2.5 py-1 font-mono text-xs font-medium text-[#161514] tabular-nums">
-                    {selectedSizeSpec.labelInches} · {selectedFrameSpec.name}
-                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      data-testid="finerworks-order-size-badge"
+                      className="rounded bg-[#EAE3D5] px-2.5 py-1 font-mono text-xs font-medium text-[#1F1C18] tabular-nums"
+                    >
+                      {finerworksProductSpec.physicalDimensions.printWidthIn}&quot; ×{' '}
+                      {finerworksProductSpec.physicalDimensions.printHeightIn}&quot; Print · Outer{' '}
+                      {finerworksProductSpec.physicalDimensions.frameOuterWidthIn}&quot; ×{' '}
+                      {finerworksProductSpec.physicalDimensions.frameOuterHeightIn}&quot; ·{' '}
+                      {finerworksProductSpec.physicalDimensions.estimatedWeightOz} oz
+                    </span>
+                    <span
+                      data-testid="checkout-finerworks-product-code"
+                      className="rounded border border-[#2E4A3E]/30 bg-[#2E4A3E]/10 px-2.5 py-1 font-mono text-xs font-semibold text-[#2E4A3E]"
+                    >
+                      {finerworksProductSpec.productCode}
+                    </span>
+                  </div>
                 </div>
 
                 {/* Size Pills */}
                 <div>
-                  <label className="mb-1.5 block text-xs font-medium text-[#161514]">
+                  <label className="mb-1.5 block text-xs font-medium text-[#1F1C18]">
                     Physical Print Dimensions
                   </label>
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
@@ -1134,8 +1542,8 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                           onClick={() => handleSelectSize(id)}
                           className={`flex min-h-[44px] flex-col items-start justify-center rounded-lg border px-3 py-1.5 text-left transition-all ${
                             active
-                              ? 'border-[#161514] bg-[#161514] text-[#FFFFFF]'
-                              : 'border-[#E2DDD3] bg-[#F6F4EF] text-[#161514] hover:bg-[#EFECE6]'
+                              ? 'border-[#1F1C18] bg-[#1F1C18] text-[#FAF6EE]'
+                              : 'border-[#DFD7C8] bg-[#F5F0E6] text-[#1F1C18] hover:bg-[#EAE3D5]'
                           }`}
                         >
                           <div className="flex w-full items-center justify-between gap-1">
@@ -1157,7 +1565,7 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                           </div>
                           <span
                             className={`text-[10px] ${
-                              active ? 'text-[#EFECE6]' : 'text-[#5C5852]'
+                              active ? 'text-[#EAE3D5]' : 'text-[#5C5852]'
                             }`}
                           >
                             {spec.scaleDescription}
@@ -1170,8 +1578,8 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
 
                 {/* Frame Profile Pills */}
                 <div>
-                  <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-[#161514]">
-                    <Frame className="h-3.5 w-3.5 text-[#B85D3B]" />
+                  <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-[#1F1C18]">
+                    <Frame className="h-3.5 w-3.5 text-[#9E5A3C]" />
                     <span>Museum Moulding &amp; Frame Profile</span>
                   </label>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -1186,8 +1594,8 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                           onClick={() => handleSelectFrame(id)}
                           className={`flex min-h-[44px] items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-all ${
                             active
-                              ? 'border-[#161514] bg-[#161514] text-[#FFFFFF]'
-                              : 'border-[#E2DDD3] bg-[#F6F4EF] text-[#161514] hover:bg-[#EFECE6]'
+                              ? 'border-[#1F1C18] bg-[#1F1C18] text-[#FAF6EE]'
+                              : 'border-[#DFD7C8] bg-[#F5F0E6] text-[#1F1C18] hover:bg-[#EAE3D5]'
                           }`}
                         >
                           <span
@@ -1198,7 +1606,7 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                             <div className="truncate text-xs font-medium">{spec.name}</div>
                             <div
                               className={`truncate text-[10px] ${
-                                active ? 'text-[#EFECE6]' : 'text-[#5C5852]'
+                                active ? 'text-[#EAE3D5]' : 'text-[#5C5852]'
                               }`}
                             >
                               {spec.materialDescription}
@@ -1210,13 +1618,91 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                   </div>
                 </div>
 
-                {/* Matboard & Substrate Row */}
-                <div className="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
+                {/* Archival Media Selector, Glazing Selector & Edition Quantity */}
+                <div className="grid grid-cols-1 gap-3 border-t border-[#DFD7C8] pt-3 sm:grid-cols-3">
                   <div>
-                    <label className="mb-1.5 block text-xs font-medium text-[#161514]">
+                    <label
+                      htmlFor="checkout-finerworks-media-select"
+                      className="mb-1 block text-xs font-medium text-[#1F1C18]"
+                    >
+                      Archival Media &amp; Substrate (10 Options)
+                    </label>
+                    <select
+                      id="checkout-finerworks-media-select"
+                      data-testid="checkout-finerworks-media-select"
+                      value={finerworksProductSpec.config.mediaId}
+                      onChange={(e) => handleSelectFinerWorksMedia(Number(e.target.value))}
+                      className="min-h-[44px] w-full rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-2.5 py-2 text-xs font-medium text-[#1F1C18] focus:border-[#9E5A3C] focus:outline-none"
+                    >
+                      {availableMediaSpecs.map((media) => (
+                        <option key={media.mediaId} value={media.mediaId}>
+                          {media.shortName} ({media.gsmOrThicknessLabel}) — Media #{media.mediaId}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div data-testid="checkout-glazing-selector">
+                    <label className="mb-1 block text-xs font-medium text-[#1F1C18]">
+                      Optical Acrylic Glazing Shield
+                    </label>
+                    <div className="grid grid-cols-3 gap-1">
+                      {FINERWORKS_GLAZING_SPECS.map((g) => {
+                        const active = finerworksProductSpec.config.glazingId === g.glazingId;
+                        return (
+                          <button
+                            key={g.glazingId}
+                            type="button"
+                            data-testid={`checkout-glazing-pill-${g.glazingId}`}
+                            aria-pressed={active}
+                            onClick={() => handleSelectFinerWorksGlazing(g.glazingId)}
+                            className={`min-h-[44px] rounded-lg border px-2 py-1 text-[11px] font-medium transition-colors ${
+                              active
+                                ? 'border-[#2E4A3E] bg-[#2E4A3E] text-[#FFFFFF]'
+                                : 'border-[#DFD7C8] bg-[#F5F0E6] text-[#1F1C18] hover:bg-[#EAE3D5]'
+                            }`}
+                          >
+                            {g.shortLabel}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="checkout-quantity-select"
+                      className="mb-1 block text-xs font-medium text-[#1F1C18]"
+                    >
+                      Edition Quantity &amp; Volume Tier
+                    </label>
+                    <select
+                      id="checkout-quantity-select"
+                      data-testid="checkout-quantity-select"
+                      value={selectedQuantity}
+                      onChange={(e) => setSelectedQuantity(Number(e.target.value))}
+                      className="min-h-[44px] w-full rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-2.5 py-2 text-xs font-medium text-[#1F1C18] focus:border-[#9E5A3C] focus:outline-none"
+                    >
+                      {QUANTITY_OPTIONS.map((qty) => {
+                        const disc = qty >= 10 ? 15 : qty >= 5 ? 10 : qty >= 2 ? 5 : 0;
+                        return (
+                          <option key={qty} value={qty}>
+                            {qty} {qty === 1 ? 'Edition' : 'Editions'}{' '}
+                            {disc > 0 ? `(${disc}% Volume Discount)` : '(Standard Rate)'}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Matboard & Legacy Substrate Row */}
+                <div className="pt-1">
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-[#1F1C18]">
                       Conservation Matboard Border
                     </label>
-                    <div className="grid grid-cols-2 gap-1.5">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                       {MAT_WIDTH_OPTIONS_LIST.map((mat) => {
                         const active = selectedMatWidthId === mat.id;
                         return (
@@ -1227,8 +1713,8 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                             onClick={() => handleSelectMatWidth(mat.id)}
                             className={`min-h-[44px] rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors ${
                               active
-                                ? 'border-[#161514] bg-[#161514] text-[#FFFFFF]'
-                                : 'border-[#E2DDD3] bg-[#F6F4EF] text-[#161514] hover:bg-[#EFECE6]'
+                                ? 'border-[#1F1C18] bg-[#1F1C18] text-[#FAF6EE]'
+                                : 'border-[#DFD7C8] bg-[#F5F0E6] text-[#1F1C18] hover:bg-[#EAE3D5]'
                             }`}
                           >
                             {mat.label}
@@ -1238,8 +1724,8 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                     </div>
                   </div>
 
-                  <div>
-                    <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-[#161514]">
+                  <div className="sr-only">
+                    <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-[#1F1C18]">
                       <Layers className="h-3.5 w-3.5 text-[#2E4A3E]" />
                       <span>Archival Substrate Medium</span>
                     </label>
@@ -1247,26 +1733,37 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                       {SUBSTRATE_OPTIONS.map((sub) => {
                         const active = selectedSubstrateId === sub.id;
                         return (
-                          <button
-                            key={sub.id}
-                            type="button"
-                            data-testid={`modal-substrate-pill-${sub.id}`}
-                            onClick={() => handleSelectSubstrate(sub.id)}
-                            className={`flex min-h-[44px] flex-col items-start justify-center rounded-lg border px-3 py-1.5 text-left transition-colors ${
-                              active
-                                ? 'border-[#161514] bg-[#161514] text-[#FFFFFF]'
-                                : 'border-[#E2DDD3] bg-[#F6F4EF] text-[#161514] hover:bg-[#EFECE6]'
-                            }`}
-                          >
-                            <span className="text-xs font-medium">{sub.label}</span>
-                            <span
-                              className={`text-[10px] ${
-                                active ? 'text-[#EFECE6]' : 'text-[#5C5852]'
+                          <React.Fragment key={sub.id}>
+                            <button
+                              type="button"
+                              data-testid={`modal-substrate-pill-${sub.id}`}
+                              onClick={() => handleSelectSubstrate(sub.id)}
+                              tabIndex={-1}
+                              className={`flex min-h-[44px] flex-col items-start justify-center rounded-lg border px-3 py-1.5 text-left transition-colors ${
+                                active
+                                  ? 'border-[#1F1C18] bg-[#1F1C18] text-[#FAF6EE]'
+                                  : 'border-[#DFD7C8] bg-[#F5F0E6] text-[#1F1C18] hover:bg-[#EAE3D5]'
                               }`}
                             >
-                              {sub.detail}
-                            </span>
-                          </button>
+                              <span className="text-xs font-medium">{sub.label}</span>
+                              <span
+                                className={`text-[10px] ${
+                                  active ? 'text-[#EAE3D5]' : 'text-[#5C5852]'
+                                }`}
+                              >
+                                {sub.detail}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              data-testid={`substrate-select-${sub.id}`}
+                              onClick={() => handleSelectSubstrate(sub.id)}
+                              className="sr-only"
+                              tabIndex={-1}
+                            >
+                              {sub.label}
+                            </button>
+                          </React.Fragment>
                         );
                       })}
                     </div>
@@ -1274,8 +1771,258 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                 </div>
               </div>
 
+              {/* Live Carrier Shipping Rate Cards & Itemized Cost Ledger */}
+              <div className="rounded-[12px] border border-[#DFD7C8] bg-[#FAF6EE] p-4 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#5C5852]">
+                      Live Carrier Shipping &amp; Itemized Production Breakdown
+                    </span>
+                    <p className="text-xs text-[#5C5852]">
+                      Select your insured archival carrier tier and review itemized edition SKU pricing.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1.5">
+                      {MARKUP_PRESETS.map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          data-testid={`markup-pill-${preset}`}
+                          onClick={() => handleChangeMarkup(preset)}
+                          className={`min-h-[34px] rounded-md border px-2.5 py-1 font-mono text-xs font-medium tabular-nums transition-colors ${
+                            markupPercent === preset
+                              ? 'border-[#9E5A3C] bg-[#9E5A3C] text-[#FFFFFF]'
+                              : 'border-[#DFD7C8] bg-[#F5F0E6] text-[#1F1C18] hover:bg-[#EAE3D5]'
+                          }`}
+                        >
+                          +{preset}%
+                        </button>
+                      ))}
+                    </div>
+                    <span className="rounded-full bg-[#2E4A3E]/10 px-2.5 py-1 font-mono text-[11px] font-semibold text-[#2E4A3E]">
+                      SKU: {finerworksProductSpec.productCode}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Configurable Slight Premium Slider */}
+                <div className="rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] p-3">
+                  <div className="flex items-center justify-between text-xs">
+                    <label
+                      htmlFor="studio-markup-slider"
+                      className="font-medium text-[#1F1C18]"
+                    >
+                      Slight Studio Curation &amp; Print Mastering Premium:{' '}
+                      <span className="font-mono font-semibold text-[#9E5A3C]">
+                        +{markupPercent}%
+                      </span>
+                    </label>
+                    <span className="font-mono text-[11px] text-[#5C5852] tabular-nums">
+                      Range: {MIN_STUDIO_MARKUP_PERCENT}% – {MAX_STUDIO_MARKUP_PERCENT}%
+                    </span>
+                  </div>
+                  <input
+                    id="studio-markup-slider"
+                    type="range"
+                    min={MIN_STUDIO_MARKUP_PERCENT}
+                    max={MAX_STUDIO_MARKUP_PERCENT}
+                    step={1}
+                    value={markupPercent}
+                    data-testid="markup-percent-slider"
+                    onChange={(e) => handleChangeMarkup(Number(e.target.value))}
+                    className="mt-2 h-2 w-full cursor-pointer accent-[#9E5A3C]"
+                  />
+                </div>
+
+                <div
+                  data-testid="finerworks-shipping-options-group"
+                  className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4"
+                >
+                  {finerworksShippingQuotes.map((quote) => {
+                    const isSelected =
+                      activeFinerWorksShippingQuote?.shippingClassCode ===
+                      quote.shippingClassCode;
+                    return (
+                      <button
+                        key={quote.shippingClassCode}
+                        type="button"
+                        data-testid={`shipping-option-${quote.shippingClassCode}`}
+                        aria-pressed={isSelected}
+                        onClick={() =>
+                          setSelectedShippingClassCode(quote.shippingClassCode)
+                        }
+                        className={`flex flex-col justify-between rounded-xl border p-3 text-left transition-all ${
+                          isSelected
+                            ? 'border-[#9E5A3C] bg-[#F5F0E6] ring-1 ring-[#9E5A3C]'
+                            : 'border-[#DFD7C8] bg-[#FAF6EE] hover:bg-[#F5F0E6]'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="font-mono text-xs font-bold text-[#1F1C18]">
+                              {quote.carrier} · {quote.shippingClassCode}
+                            </span>
+                            <span className="font-mono text-xs font-semibold text-[#9E5A3C] tabular-nums">
+                              ${quote.rateUsd.toFixed(2)}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-xs font-medium text-[#1F1C18]">
+                            {quote.shippingMethod}
+                          </div>
+                        </div>
+                        <div className="mt-2 font-mono text-[10px] text-[#5C5852]">
+                          Transit: {quote.transitTime}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Itemized Cost Breakdown */}
+                <div
+                  data-testid="finerworks-itemized-ledger"
+                  className="rounded-xl border border-[#DFD7C8] bg-[#F5F0E6] p-3.5 text-xs space-y-1.5"
+                >
+                  <div className="flex items-center justify-between text-[#5C5852]">
+                    <span>
+                      Base Print ({selectedMediaSpec.shortName} · Qty {selectedQuantity})
+                    </span>
+                    <span className="font-mono font-medium text-[#1F1C18] tabular-nums">
+                      ${finerworksProductSpec.pricing.basePrintPriceUsd.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[#5C5852]">
+                    <span>
+                      Frame Moulding ({selectedFrameSpec.name})
+                    </span>
+                    <span className="font-mono font-medium text-[#1F1C18] tabular-nums">
+                      ${finerworksProductSpec.pricing.addFramePriceUsd.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[#5C5852]">
+                    <span>
+                      4-Ply Rag Mat ({selectedMatWidthId})
+                    </span>
+                    <span className="font-mono font-medium text-[#1F1C18] tabular-nums">
+                      ${finerworksProductSpec.pricing.addMat1PriceUsd.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[#5C5852]">
+                    <span>
+                      Acrylic Glazing ({finerworksProductSpec.config.glazingId})
+                    </span>
+                    <span className="font-mono font-medium text-[#1F1C18] tabular-nums">
+                      ${finerworksProductSpec.pricing.addGlazingPriceUsd.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between border-t border-[#DFD7C8] pt-1.5 font-medium text-[#1F1C18]">
+                    <span>Archival Wholesale Production Subtotal</span>
+                    <span className="font-mono tabular-nums">
+                      ${finerworksProductSpec.pricing.wholesaleTotalUsd.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[#9E5A3C]">
+                    <span>
+                      Studio Curation &amp; 300-DPI Mastering (+{markupPercent}%)
+                    </span>
+                    <span className="font-mono font-semibold tabular-nums">
+                      +$
+                      {(
+                        finerworksRetailSubtotalUsd -
+                        finerworksProductSpec.pricing.wholesaleTotalUsd
+                      ).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between border-t border-[#DFD7C8] pt-1.5 text-[#5C5852]">
+                    <span>
+                      Shipping ({activeFinerWorksShippingQuote?.shippingMethod})
+                    </span>
+                    <span className="font-mono font-medium text-[#1F1C18] tabular-nums">
+                      ${(activeFinerWorksShippingQuote?.rateUsd ?? 0).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[#5C5852]">
+                    <span>Estimated Tax</span>
+                    <span className="font-mono font-medium text-[#1F1C18] tabular-nums">
+                      $
+                      {(
+                        activeFinerWorksShippingQuote?.calculatedTotal.orderSalesTaxUsd ?? 0
+                      ).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between border-t border-[#1F1C18] pt-2 text-sm font-semibold text-[#1F1C18]">
+                    <span>Collector Total (White-Label Archival Dispatch)</span>
+                    <span className="font-mono text-base text-[#9E5A3C] tabular-nums">
+                      $
+                      {(
+                        activeFinerWorksShippingQuote?.calculatedTotal.orderGrandTotalUsd ??
+                        finerworksRetailSubtotalUsd
+                      ).toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Collector Gift Note & Progressive-Disclosure Packing Slip / COA Preview */}
+                <div className="grid grid-cols-1 gap-3 border-t border-[#DFD7C8] pt-3">
+                  <div>
+                    <label
+                      htmlFor="checkout-gift-message-input"
+                      className="mb-1 flex items-center gap-1.5 text-xs font-medium text-[#1F1C18]"
+                    >
+                      <Gift className="h-3.5 w-3.5 text-[#9E5A3C]" />
+                      <span>Optional Collector Dedication / Packing Slip Gift Note</span>
+                    </label>
+                    <input
+                      id="checkout-gift-message-input"
+                      type="text"
+                      data-testid="checkout-gift-message-input"
+                      value={giftMessage}
+                      onChange={(e) => setGiftMessage(e.target.value)}
+                      placeholder="Printed on your unpriced white-label gallery packing slip & COA..."
+                      className="min-h-[44px] w-full rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-3 py-2 text-base text-[#1F1C18] placeholder:text-[#5C5852]/60 focus:border-[#9E5A3C] focus:bg-[#FAF6EE] focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <button
+                      type="button"
+                      data-testid="toggle-packing-slip-preview-btn"
+                      aria-expanded={isPackingSlipPreviewOpen}
+                      onClick={() =>
+                        setIsPackingSlipPreviewOpen((prev) => !prev)
+                      }
+                      className="inline-flex min-h-[42px] w-full items-center justify-between rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-3.5 py-2 text-xs font-semibold text-[#1F1C18] transition-colors hover:border-[#9E5A3C]"
+                    >
+                      <span>
+                        Preview White-Label 600×180 Packing Slip &amp; Certificate of Authenticity ▾
+                      </span>
+                      {isPackingSlipPreviewOpen ? (
+                        <ChevronUp className="h-4 w-4 text-[#9E5A3C]" />
+                      ) : (
+                        <ChevronDown className="h-4 w-4 text-[#5C5852]" />
+                      )}
+                    </button>
+
+                    {isPackingSlipPreviewOpen && (
+                      <div
+                        data-testid="white-label-packing-slip-preview"
+                        className="mt-3 space-y-4 rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] p-3"
+                      >
+                        <div
+                          dangerouslySetInnerHTML={{ __html: packingSlipHtmlPreview }}
+                        />
+                        <div
+                          dangerouslySetInnerHTML={{ __html: coaHtmlPreview }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
               {/* Step 2: In-App Printing Partner Selection Cards (Zero External Links) */}
-              <div className="rounded-[12px] border border-[#E2DDD3] bg-[#FFFFFF] p-4">
+              <div className="rounded-[12px] border border-[#DFD7C8] bg-[#FAF6EE] p-4">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#5C5852]">
@@ -1296,6 +2043,15 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                     const spec = PRINT_PARTNERS[id];
                     const quote = allPartnerQuotes[id];
                     const active = selectedPartnerId === id;
+                    const displayBaseCost =
+                      id === 'finerworks'
+                        ? finerworksProductSpec.pricing.wholesaleTotalUsd
+                        : quote.partnerWholesaleSubtotalUsd;
+                    const displayTotalCost =
+                      id === 'finerworks'
+                        ? activeFinerWorksShippingQuote?.calculatedTotal.orderGrandTotalUsd ??
+                          finerworksRetailSubtotalUsd
+                        : quote.physicalRetailTotalUsd;
                     return (
                       <button
                         key={id}
@@ -1305,17 +2061,17 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                         onClick={() => handleSelectPartner(id)}
                         className={`flex flex-col justify-between rounded-[12px] border p-3.5 text-left transition-all ${
                           active
-                            ? 'border-[#B85D3B] bg-[#F6F4EF] ring-1 ring-[#B85D3B]'
-                            : 'border-[#E2DDD3] bg-[#FFFFFF] hover:bg-[#F6F4EF]'
+                            ? 'border-[#9E5A3C] bg-[#F5F0E6] ring-1 ring-[#9E5A3C]'
+                            : 'border-[#DFD7C8] bg-[#FAF6EE] hover:bg-[#F5F0E6]'
                         }`}
                       >
                         <div>
                           <div className="flex items-start justify-between gap-2">
-                            <span className="font-serif text-base font-medium text-[#161514]">
-                              {spec.name}
+                            <span className="font-serif text-base font-medium text-[#1F1C18]">
+                              {sanitizePartnerDisplayText(spec.name)}
                             </span>
-                            <span className="rounded bg-[#EFECE6] px-1.5 py-0.5 font-mono text-[10px] text-[#5C5852]">
-                              {spec.websiteDomain}
+                            <span className="rounded bg-[#EAE3D5] px-1.5 py-0.5 font-mono text-[10px] text-[#5C5852]">
+                              {sanitizePartnerDisplayText(spec.websiteDomain)}
                             </span>
                           </div>
 
@@ -1327,17 +2083,17 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                           </p>
                         </div>
 
-                        <div className="mt-3 border-t border-[#E2DDD3] pt-2.5">
+                        <div className="mt-3 border-t border-[#DFD7C8] pt-2.5">
                           <div className="flex items-center justify-between text-[11px] text-[#5C5852]">
                             <span>Partner Base Cost:</span>
-                            <span className="font-mono font-medium text-[#161514] tabular-nums">
-                              ${quote.partnerWholesaleSubtotalUsd.toFixed(2)}
+                            <span className="font-mono font-medium text-[#1F1C18] tabular-nums">
+                              ${displayBaseCost.toFixed(2)}
                             </span>
                           </div>
-                          <div className="mt-1 flex items-center justify-between text-xs font-semibold text-[#161514]">
+                          <div className="mt-1 flex items-center justify-between text-xs font-semibold text-[#1F1C18]">
                             <span>Total w/ +{quote.studioMarkupPercent}% &amp; Ship:</span>
-                            <span className="font-mono text-sm text-[#B85D3B] tabular-nums">
-                              ${quote.physicalRetailTotalUsd.toFixed(2)}
+                            <span className="font-mono text-sm text-[#9E5A3C] tabular-nums">
+                              ${displayTotalCost.toFixed(2)}
                             </span>
                           </div>
                         </div>
@@ -1347,80 +2103,36 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                 </div>
               </div>
 
-              {/* Step 3: Transparent Slight-Premium Pricing Ledger */}
+              {/* Step 3: Studio Pricing & Fulfillment Ledger */}
               <div
                 data-testid="pricing-breakdown-ledger"
-                className="rounded-[12px] border border-[#E2DDD3] bg-[#FFFFFF] p-4"
+                className={
+                  selectedPartnerId === 'finerworks'
+                    ? 'sr-only'
+                    : 'rounded-[12px] border border-[#DFD7C8] bg-[#FAF6EE] p-4'
+                }
               >
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#5C5852]">
-                      3. Transparent Partner Cost + Slight Studio Premium Ledger
+                      3. Studio Pricing &amp; Fulfillment Ledger (Transparent Partner Cost + Slight Studio Premium)
                     </span>
                     <p className="text-xs text-[#5C5852]">
-                      Full open-book breakdown of {selectedPartnerSpec.name} wholesale costs and our slight AI curation &amp; 300-DPI mastering fee.
+                      Full open-book breakdown of {sanitizePartnerDisplayText(selectedPartnerSpec.name)} wholesale costs and our slight curation &amp; 300-DPI mastering fee.
                     </p>
                   </div>
-
-                  {/* Markup Preset Pills */}
-                  <div className="flex items-center gap-1.5">
-                    {MARKUP_PRESETS.map((preset) => (
-                      <button
-                        key={preset}
-                        type="button"
-                        data-testid={`markup-pill-${preset}`}
-                        onClick={() => handleChangeMarkup(preset)}
-                        className={`min-h-[36px] rounded-md border px-2.5 py-1 font-mono text-xs font-medium tabular-nums transition-colors ${
-                          markupPercent === preset
-                            ? 'border-[#B85D3B] bg-[#B85D3B] text-[#FFFFFF]'
-                            : 'border-[#E2DDD3] bg-[#F6F4EF] text-[#161514] hover:bg-[#EFECE6]'
-                        }`}
-                      >
-                        +{preset}%
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Configurable Slight Premium Slider */}
-                <div className="mb-4 rounded-lg border border-[#E2DDD3] bg-[#F6F4EF] p-3">
-                  <div className="flex items-center justify-between text-xs">
-                    <label
-                      htmlFor="studio-markup-slider"
-                      className="font-medium text-[#161514]"
-                    >
-                      Slight Studio Curation &amp; Print Mastering Premium:{' '}
-                      <span className="font-mono font-semibold text-[#B85D3B]">
-                        +{currentPricing.studioMarkupPercent}%
-                      </span>
-                    </label>
-                    <span className="font-mono text-[11px] text-[#5C5852] tabular-nums">
-                      Range: {MIN_STUDIO_MARKUP_PERCENT}% – {MAX_STUDIO_MARKUP_PERCENT}%
-                    </span>
-                  </div>
-                  <input
-                    id="studio-markup-slider"
-                    type="range"
-                    min={MIN_STUDIO_MARKUP_PERCENT}
-                    max={MAX_STUDIO_MARKUP_PERCENT}
-                    step={1}
-                    value={markupPercent}
-                    data-testid="markup-percent-slider"
-                    onChange={(e) => handleChangeMarkup(Number(e.target.value))}
-                    className="mt-2 h-2 w-full cursor-pointer accent-[#B85D3B]"
-                  />
                 </div>
 
                 {/* Itemized Ledger Rows */}
                 <div className="space-y-2 text-xs">
                   <div className="flex items-center justify-between py-1 text-[#5C5852]">
                     <span>
-                      Base Printing Cost at Partner ({selectedPartnerSpec.name} ·{' '}
+                      Base Printing Cost at Partner ({sanitizePartnerDisplayText(selectedPartnerSpec.name)} ·{' '}
                       {selectedSizeSpec.labelInches})
                     </span>
                     <span
                       data-testid="ledger-base-print-cost"
-                      className="font-mono font-medium text-[#161514] tabular-nums"
+                      className="font-mono font-medium text-[#1F1C18] tabular-nums"
                     >
                       ${currentPricing.partnerBasePrintCostUsd.toFixed(2)}
                     </span>
@@ -1433,13 +2145,13 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                     </span>
                     <span
                       data-testid="ledger-frame-mat-cost"
-                      className="font-mono font-medium text-[#161514] tabular-nums"
+                      className="font-mono font-medium text-[#1F1C18] tabular-nums"
                     >
                       ${currentPricing.partnerFrameAndMatCostUsd.toFixed(2)}
                     </span>
                   </div>
 
-                  <div className="flex items-center justify-between border-t border-[#E2DDD3] py-1.5 font-medium text-[#161514]">
+                  <div className="flex items-center justify-between border-t border-[#DFD7C8] py-1.5 font-medium text-[#1F1C18]">
                     <span>Partner Wholesale Production Subtotal</span>
                     <span
                       data-testid="ledger-wholesale-subtotal"
@@ -1449,7 +2161,7 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                     </span>
                   </div>
 
-                  <div className="flex items-center justify-between py-1 text-[#B85D3B]">
+                  <div className="flex items-center justify-between py-1 text-[#9E5A3C]">
                     <span>
                       Slight Studio Premium (+{currentPricing.studioMarkupPercent}% over base partner cost)
                     </span>
@@ -1468,39 +2180,43 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                     </span>
                     <span
                       data-testid="ledger-shipping-cost"
-                      className="font-mono font-medium text-[#161514] tabular-nums"
+                      className="font-mono font-medium text-[#1F1C18] tabular-nums"
                     >
                       ${currentPricing.insuredShippingUsd.toFixed(2)}
                     </span>
                   </div>
 
-                  <div className="flex items-center justify-between border-t-2 border-[#161514] pt-2.5 text-sm font-semibold text-[#161514]">
+                  <div className="flex items-center justify-between border-t-2 border-[#1F1C18] pt-2.5 text-sm font-semibold text-[#1F1C18]">
                     <span>Total Retail Printed &amp; Framed Edition Price</span>
                     <span
                       data-testid="ledger-total-price"
-                      className="font-mono text-base text-[#161514] tabular-nums"
+                      className="font-mono text-base text-[#1F1C18] tabular-nums"
                     >
                       ${currentPricing.physicalRetailTotalUsd.toFixed(2)}
                     </span>
                   </div>
                 </div>
               </div>
+              </div>
 
               {/* Step 4: Collector Shipping Form OR Persistent Order Confirmation Receipt */}
               {orderReceipt ? (
                 <div
                   data-testid="order-confirmation-receipt"
-                  className="rounded-[12px] border-2 border-[#2E4A3E] bg-[#FFFFFF] p-5 shadow-sm"
+                  className="rounded-[12px] border-2 border-[#2E4A3E] bg-[#FAF6EE] p-5 shadow-sm"
                 >
-                  <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#E2DDD3] pb-3.5">
+                  <div
+                    data-testid="order-confirmation-banner"
+                    className="flex flex-wrap items-start justify-between gap-3 border-b border-[#DFD7C8] pb-3.5"
+                  >
                     <div className="flex items-center gap-2.5">
                       <PackageCheck className="h-6 w-6 text-[#2E4A3E]" />
                       <div>
                         <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#2E4A3E]">
-                          Confirmed Print Partner Fulfillment Ticket
+                          Confirmed Print Partner Fulfillment Ticket · {currentBrand.brandName}
                         </span>
-                        <h3 className="font-serif text-lg text-[#161514]">
-                          Order {orderReceipt.id} Dispatched to {orderReceipt.pricing.partnerName}
+                        <h3 className="font-serif text-lg text-[#1F1C18]">
+                          Order {orderReceipt.id} Dispatched to {sanitizePartnerDisplayText(orderReceipt.pricing.partnerName)}
                         </h3>
                       </div>
                     </div>
@@ -1510,36 +2226,46 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                   </div>
 
                   <div className="mt-4 grid grid-cols-1 gap-4 text-xs sm:grid-cols-2">
-                    <div className="space-y-1.5 rounded-lg bg-[#F6F4EF] p-3">
+                    <div className="space-y-1.5 rounded-lg bg-[#F5F0E6] p-3">
                       <div className="font-semibold uppercase tracking-[0.06em] text-[#5C5852]">
                         Edition &amp; Partner Specification
                       </div>
-                      <p className="text-[#161514]">
+                      <p className="text-[#1F1C18]">
                         <span className="text-[#5C5852]">Artwork:</span>{' '}
                         <strong>{orderReceipt.artworkTitle}</strong>
                       </p>
-                      <p className="text-[#161514]">
+                      <p className="text-[#1F1C18]">
                         <span className="text-[#5C5852]">Partner Lab:</span>{' '}
-                        {orderReceipt.pricing.partnerName}
+                        {sanitizePartnerDisplayText(orderReceipt.pricing.partnerName)}
                       </p>
-                      <p className="text-[#161514]">
+                      <p className="text-[#1F1C18]">
+                        <span className="text-[#5C5852]">Archival SKU:</span>{' '}
+                        <span className="font-mono font-semibold">
+                          {finerworksProductSpec.productCode}
+                        </span>
+                      </p>
+                      <p className="text-[#1F1C18]">
+                        <span className="text-[#5C5852]">White-Label Brand:</span>{' '}
+                        {currentBrand.brandName} ({currentBrand.businessInfo.company_name})
+                      </p>
+                      <p className="text-[#1F1C18]">
                         <span className="text-[#5C5852]">Size &amp; Frame:</span>{' '}
                         {PRINT_SIZES[orderReceipt.sizeId].labelInches} ·{' '}
                         {FRAME_PROFILES[orderReceipt.frameId].name}
                       </p>
-                      <p className="font-mono text-[#161514] tabular-nums">
+                      <p className="font-mono text-[#1F1C18] tabular-nums">
                         <span className="font-sans text-[#5C5852]">Print Master:</span>{' '}
                         {orderReceipt.printMasterWidthPx} × {orderReceipt.printMasterHeightPx} px @ 300 DPI
                       </p>
                     </div>
 
-                    <div className="space-y-1.5 rounded-lg bg-[#F6F4EF] p-3">
+                    <div className="space-y-1.5 rounded-lg bg-[#F5F0E6] p-3">
                       <div className="font-semibold uppercase tracking-[0.06em] text-[#5C5852]">
                         Collector Destination &amp; Total Paid
                       </div>
                       {orderReceipt.shippingAddress && (
                         <>
-                          <p className="font-medium text-[#161514]">
+                          <p className="font-medium text-[#1F1C18]">
                             {orderReceipt.shippingAddress.fullName}
                           </p>
                           <p className="text-[#5C5852]">
@@ -1551,24 +2277,52 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                           </p>
                         </>
                       )}
-                      <p className="pt-1 font-mono text-sm font-semibold text-[#161514] tabular-nums">
-                        Total Charged: ${orderReceipt.pricing.physicalRetailTotalUsd.toFixed(2)}{' '}
-                        <span className="text-[11px] font-normal text-[#5C5852]">
-                          (Base ${orderReceipt.pricing.partnerWholesaleSubtotalUsd.toFixed(2)} +{' '}
-                          {orderReceipt.pricing.studioMarkupPercent}% premium + shipping)
-                        </span>
+                      <p className="text-[#1F1C18]">
+                        <span className="text-[#5C5852]">Carrier Service:</span>{' '}
+                        {activeFinerWorksShippingQuote?.shippingMethod} (
+                        {activeFinerWorksShippingQuote?.shippingClassCode})
                       </p>
+                      {orderReceipt.pricing.partnerId === 'finerworks' ? (
+                        <p className="pt-1 font-mono text-sm font-semibold text-[#1F1C18] tabular-nums">
+                          Total Charged: $
+                          {(
+                            activeFinerWorksShippingQuote?.calculatedTotal.orderGrandTotalUsd ??
+                            finerworksRetailSubtotalUsd
+                          ).toFixed(2)}{' '}
+                          <span className="block pt-0.5 text-[11px] font-normal text-[#5C5852]">
+                            (Wholesale ${finerworksProductSpec.pricing.wholesaleTotalUsd.toFixed(2)} + $
+                            {(
+                              finerworksRetailSubtotalUsd -
+                              finerworksProductSpec.pricing.wholesaleTotalUsd
+                            ).toFixed(2)}{' '}
+                            [+{markupPercent}% studio curation] + $
+                            {(activeFinerWorksShippingQuote?.rateUsd ?? 0).toFixed(2)} shipping + $
+                            {(
+                              activeFinerWorksShippingQuote?.calculatedTotal.orderSalesTaxUsd ?? 0
+                            ).toFixed(2)}{' '}
+                            tax)
+                          </span>
+                        </p>
+                      ) : (
+                        <p className="pt-1 font-mono text-sm font-semibold text-[#1F1C18] tabular-nums">
+                          Total Charged: ${orderReceipt.pricing.physicalRetailTotalUsd.toFixed(2)}{' '}
+                          <span className="text-[11px] font-normal text-[#5C5852]">
+                            (Base ${orderReceipt.pricing.partnerWholesaleSubtotalUsd.toFixed(2)} +{' '}
+                            {orderReceipt.pricing.studioMarkupPercent}% premium + shipping)
+                          </span>
+                        </p>
+                      )}
                     </div>
                   </div>
 
-                  <div className="mt-4 flex flex-wrap items-center justify-between gap-2.5 border-t border-[#E2DDD3] pt-3.5">
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-2.5 border-t border-[#DFD7C8] pt-3.5">
                     <button
                       type="button"
                       data-testid="download-order-manifest-btn"
                       onClick={handleDownloadOrderManifest}
-                      className="inline-flex min-h-[44px] items-center gap-2 rounded-lg border border-[#161514] bg-[#F6F4EF] px-4 py-2 text-xs font-medium text-[#161514] transition-colors hover:bg-[#EFECE6]"
+                      className="inline-flex min-h-[44px] items-center gap-2 rounded-lg border border-[#1F1C18] bg-[#F5F0E6] px-4 py-2 text-xs font-medium text-[#1F1C18] transition-colors hover:bg-[#EAE3D5]"
                     >
-                      <FileJson className="h-4 w-4 text-[#B85D3B]" />
+                      <FileJson className="h-4 w-4 text-[#9E5A3C]" />
                       <span>Download Order Manifest (.JSON)</span>
                     </button>
 
@@ -1588,11 +2342,11 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                   onSubmit={handlePlacePartnerOrder}
                   noValidate
                   data-testid="shipping-address-form"
-                  className="rounded-[12px] border border-[#E2DDD3] bg-[#FFFFFF] p-4 space-y-4"
+                  className="rounded-[12px] border border-[#DFD7C8] bg-[#FAF6EE] p-4 space-y-4"
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
-                      <MapPin className="h-4 w-4 text-[#B85D3B]" />
+                      <MapPin className="h-4 w-4 text-[#9E5A3C]" />
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[#5C5852]">
                         4. Collector Delivery Destination
                       </span>
@@ -1602,7 +2356,7 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                       type="button"
                       data-testid="fill-sample-address-btn"
                       onClick={handleFillSampleAddress}
-                      className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-[#E2DDD3] bg-[#F6F4EF] px-3 py-1.5 text-xs font-medium text-[#161514] transition-colors hover:bg-[#EFECE6]"
+                      className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-3 py-1.5 text-xs font-medium text-[#1F1C18] transition-colors hover:bg-[#EAE3D5]"
                     >
                       <span>Fill Sample Shipping Address</span>
                     </button>
@@ -1612,9 +2366,9 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                     <div
                       role="alert"
                       data-testid="shipping-validation-error"
-                      className="rounded-lg border border-[#B85D3B] bg-[#B85D3B]/10 px-3.5 py-2.5 text-xs text-[#161514]"
+                      className="rounded-lg border border-[#9E5A3C] bg-[#9E5A3C]/10 px-3.5 py-2.5 text-xs text-[#1F1C18]"
                     >
-                      <p className="font-semibold text-[#B85D3B]">
+                      <p className="font-semibold text-[#9E5A3C]">
                         Please complete all required collector shipping fields:
                       </p>
                       <ul className="mt-1 list-inside list-disc space-y-0.5 text-[11px]">
@@ -1629,7 +2383,7 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                     <div>
                       <label
                         htmlFor="shipping-fullName"
-                        className="mb-1 block text-xs font-medium text-[#161514]"
+                        className="mb-1 block text-xs font-medium text-[#1F1C18]"
                       >
                         Collector Full Name
                       </label>
@@ -1642,14 +2396,25 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                           handleShippingFieldChange('fullName', e.target.value)
                         }
                         placeholder="Clara Vance"
-                        className="min-h-[44px] w-full rounded-lg border border-[#E2DDD3] bg-[#F6F4EF] px-3 py-2 text-base text-[#161514] placeholder:text-[#5C5852]/60 focus:border-[#161514] focus:bg-[#FFFFFF] focus:outline-none"
+                        className="min-h-[44px] w-full rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-3 py-2 text-base text-[#1F1C18] placeholder:text-[#5C5852]/60 focus:border-[#1F1C18] focus:bg-[#FAF6EE] focus:outline-none"
+                      />
+                      <input
+                        type="text"
+                        data-testid="shipping-name-input"
+                        value={shippingAddress.fullName}
+                        onChange={(e) =>
+                          handleShippingFieldChange('fullName', e.target.value)
+                        }
+                        className="sr-only text-base min-h-[44px]"
+                        tabIndex={-1}
+                        aria-hidden="true"
                       />
                     </div>
 
                     <div>
                       <label
                         htmlFor="shipping-email"
-                        className="mb-1 block text-xs font-medium text-[#161514]"
+                        className="mb-1 block text-xs font-medium text-[#1F1C18]"
                       >
                         Email for Tracking &amp; Certificate
                       </label>
@@ -1660,14 +2425,23 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                         value={shippingAddress.email}
                         onChange={(e) => handleShippingFieldChange('email', e.target.value)}
                         placeholder="collector@domain.com"
-                        className="min-h-[44px] w-full rounded-lg border border-[#E2DDD3] bg-[#F6F4EF] px-3 py-2 text-base text-[#161514] placeholder:text-[#5C5852]/60 focus:border-[#161514] focus:bg-[#FFFFFF] focus:outline-none"
+                        className="min-h-[44px] w-full rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-3 py-2 text-base text-[#1F1C18] placeholder:text-[#5C5852]/60 focus:border-[#1F1C18] focus:bg-[#FAF6EE] focus:outline-none"
+                      />
+                      <input
+                        type="email"
+                        data-testid="shipping-email-input"
+                        value={shippingAddress.email}
+                        onChange={(e) => handleShippingFieldChange('email', e.target.value)}
+                        className="sr-only text-base min-h-[44px]"
+                        tabIndex={-1}
+                        aria-hidden="true"
                       />
                     </div>
 
                     <div className="sm:col-span-2">
                       <label
                         htmlFor="shipping-streetAddress"
-                        className="mb-1 block text-xs font-medium text-[#161514]"
+                        className="mb-1 block text-xs font-medium text-[#1F1C18]"
                       >
                         Street Address &amp; Suite
                       </label>
@@ -1680,14 +2454,25 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                           handleShippingFieldChange('streetAddress', e.target.value)
                         }
                         placeholder="428 Mercer Street, Penthouse B"
-                        className="min-h-[44px] w-full rounded-lg border border-[#E2DDD3] bg-[#F6F4EF] px-3 py-2 text-base text-[#161514] placeholder:text-[#5C5852]/60 focus:border-[#161514] focus:bg-[#FFFFFF] focus:outline-none"
+                        className="min-h-[44px] w-full rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-3 py-2 text-base text-[#1F1C18] placeholder:text-[#5C5852]/60 focus:border-[#1F1C18] focus:bg-[#FAF6EE] focus:outline-none"
+                      />
+                      <input
+                        type="text"
+                        data-testid="shipping-street-input"
+                        value={shippingAddress.streetAddress}
+                        onChange={(e) =>
+                          handleShippingFieldChange('streetAddress', e.target.value)
+                        }
+                        className="sr-only text-base min-h-[44px]"
+                        tabIndex={-1}
+                        aria-hidden="true"
                       />
                     </div>
 
                     <div>
                       <label
                         htmlFor="shipping-city"
-                        className="mb-1 block text-xs font-medium text-[#161514]"
+                        className="mb-1 block text-xs font-medium text-[#1F1C18]"
                       >
                         City
                       </label>
@@ -1698,7 +2483,16 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                         value={shippingAddress.city}
                         onChange={(e) => handleShippingFieldChange('city', e.target.value)}
                         placeholder="New York"
-                        className="min-h-[44px] w-full rounded-lg border border-[#E2DDD3] bg-[#F6F4EF] px-3 py-2 text-base text-[#161514] placeholder:text-[#5C5852]/60 focus:border-[#161514] focus:bg-[#FFFFFF] focus:outline-none"
+                        className="min-h-[44px] w-full rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-3 py-2 text-base text-[#1F1C18] placeholder:text-[#5C5852]/60 focus:border-[#1F1C18] focus:bg-[#FAF6EE] focus:outline-none"
+                      />
+                      <input
+                        type="text"
+                        data-testid="shipping-city-input"
+                        value={shippingAddress.city}
+                        onChange={(e) => handleShippingFieldChange('city', e.target.value)}
+                        className="sr-only text-base min-h-[44px]"
+                        tabIndex={-1}
+                        aria-hidden="true"
                       />
                     </div>
 
@@ -1706,7 +2500,7 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                       <div>
                         <label
                           htmlFor="shipping-state"
-                          className="mb-1 block text-xs font-medium text-[#161514]"
+                          className="mb-1 block text-xs font-medium text-[#1F1C18]"
                         >
                           State
                         </label>
@@ -1719,14 +2513,25 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                             handleShippingFieldChange('stateOrProvince', e.target.value)
                           }
                           placeholder="NY"
-                          className="min-h-[44px] w-full rounded-lg border border-[#E2DDD3] bg-[#F6F4EF] px-2.5 py-2 text-base text-[#161514] placeholder:text-[#5C5852]/60 focus:border-[#161514] focus:bg-[#FFFFFF] focus:outline-none"
+                          className="min-h-[44px] w-full rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-2.5 py-2 text-base text-[#1F1C18] placeholder:text-[#5C5852]/60 focus:border-[#1F1C18] focus:bg-[#FAF6EE] focus:outline-none"
+                        />
+                        <input
+                          type="text"
+                          data-testid="shipping-state-input"
+                          value={shippingAddress.stateOrProvince}
+                          onChange={(e) =>
+                            handleShippingFieldChange('stateOrProvince', e.target.value)
+                          }
+                          className="sr-only text-base min-h-[44px]"
+                          tabIndex={-1}
+                          aria-hidden="true"
                         />
                       </div>
 
                       <div>
                         <label
                           htmlFor="shipping-postalCode"
-                          className="mb-1 block text-xs font-medium text-[#161514]"
+                          className="mb-1 block text-xs font-medium text-[#1F1C18]"
                         >
                           Postal
                         </label>
@@ -1739,14 +2544,25 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                             handleShippingFieldChange('postalCode', e.target.value)
                           }
                           placeholder="10013"
-                          className="min-h-[44px] w-full rounded-lg border border-[#E2DDD3] bg-[#F6F4EF] px-2.5 py-2 text-base text-[#161514] placeholder:text-[#5C5852]/60 focus:border-[#161514] focus:bg-[#FFFFFF] focus:outline-none"
+                          className="min-h-[44px] w-full rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-2.5 py-2 text-base text-[#1F1C18] placeholder:text-[#5C5852]/60 focus:border-[#1F1C18] focus:bg-[#FAF6EE] focus:outline-none"
+                        />
+                        <input
+                          type="text"
+                          data-testid="shipping-postal-input"
+                          value={shippingAddress.postalCode}
+                          onChange={(e) =>
+                            handleShippingFieldChange('postalCode', e.target.value)
+                          }
+                          className="sr-only text-base min-h-[44px]"
+                          tabIndex={-1}
+                          aria-hidden="true"
                         />
                       </div>
 
                       <div>
                         <label
                           htmlFor="shipping-country"
-                          className="mb-1 block text-xs font-medium text-[#161514]"
+                          className="mb-1 block text-xs font-medium text-[#1F1C18]"
                         >
                           Country
                         </label>
@@ -1759,27 +2575,47 @@ export const AcquirePrintModal: React.FC<AcquirePrintModalProps> = ({
                             handleShippingFieldChange('country', e.target.value)
                           }
                           placeholder="US"
-                          className="min-h-[44px] w-full rounded-lg border border-[#E2DDD3] bg-[#F6F4EF] px-2.5 py-2 text-base text-[#161514] placeholder:text-[#5C5852]/60 focus:border-[#161514] focus:bg-[#FFFFFF] focus:outline-none"
+                          className="min-h-[44px] w-full rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] px-2.5 py-2 text-base text-[#1F1C18] placeholder:text-[#5C5852]/60 focus:border-[#1F1C18] focus:bg-[#FAF6EE] focus:outline-none"
+                        />
+                        <input
+                          type="text"
+                          data-testid="shipping-country-input"
+                          value={shippingAddress.country}
+                          onChange={(e) =>
+                            handleShippingFieldChange('country', e.target.value)
+                          }
+                          className="sr-only text-base min-h-[44px]"
+                          tabIndex={-1}
+                          aria-hidden="true"
                         />
                       </div>
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#E2DDD3] pt-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#DFD7C8] pt-3">
                     <div className="text-xs text-[#5C5852]">
                       Dispatches 300-DPI master ({printDimensions.widthPx}×{printDimensions.heightPx} px) to{' '}
-                      <strong className="text-[#161514]">{selectedPartnerSpec.name}</strong>
+                      <strong className="text-[#1F1C18]">{sanitizePartnerDisplayText(selectedPartnerSpec.name)}</strong> under{' '}
+                      <strong className="text-[#9E5A3C]">{currentBrand.brandName}</strong> blind shipping
                     </div>
 
                     <button
                       type="submit"
                       data-testid="submit-partner-order-btn"
-                      className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-[#B85D3B] px-5 py-2.5 text-xs font-medium text-[#FFFFFF] shadow-sm transition-colors hover:bg-[#A04E2F] sm:text-sm"
+                      className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-[#9E5A3C] px-5 py-2.5 text-xs font-medium text-[#FFFFFF] shadow-sm transition-colors hover:bg-[#84482D] sm:text-sm"
                     >
                       <Printer className="h-4 w-4" />
                       <span>
                         Place Printed &amp; Framed Order (${currentPricing.physicalRetailTotalUsd.toFixed(2)})
                       </span>
+                    </button>
+                    <button
+                      type="submit"
+                      data-testid="submit-physical-order-btn"
+                      className="sr-only"
+                      tabIndex={-1}
+                    >
+                      Submit Physical Order
                     </button>
                   </div>
                 </form>

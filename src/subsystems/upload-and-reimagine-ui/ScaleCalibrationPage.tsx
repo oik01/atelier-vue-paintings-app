@@ -1,8 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  FinerWorksBuiltProductSpec,
+  FinerWorksGlazingId,
   FRAME_PROFILES,
   FrameProfileId,
   ImageCaliperSegment,
+  MatColorId,
   MatWidthId,
   NormalizedCropBox,
   PRINT_SIZES,
@@ -11,6 +14,7 @@ import {
   ScaleCalibrationQuestion,
   ScaleCalibrationResult,
 } from '../../contracts/masterContract';
+import { buildFinerWorksProductSpec } from '../finerworks-catalog-sync';
 import {
   refineArtworkOuterFrameBoxInCanvas,
   sanitizeNormalizedCropBox,
@@ -405,6 +409,14 @@ export interface ScaleCalibrationPageProps {
   frameDetectionLayerDataUrl?: string;
   selectedFrameId?: FrameProfileId;
   selectedMatWidthId?: MatWidthId;
+  selectedMediaId?: number;
+  selectedMatColorId?: MatColorId;
+  selectedGlazingId?: FinerWorksGlazingId;
+  onApplyCustomFinerWorksDimensions?: (
+    customWidthIn: number,
+    customHeightIn: number,
+    customSpec: FinerWorksBuiltProductSpec
+  ) => void;
   isPostVisualizationModal?: boolean;
   headOnPhotoLabel?: string;
   artworkTitle?: string;
@@ -433,6 +445,10 @@ export const ScaleCalibrationPage: React.FC<ScaleCalibrationPageProps> = ({
   frameDetectionLayerDataUrl,
   selectedFrameId = 'natural-white-oak',
   selectedMatWidthId = 'none',
+  selectedMediaId,
+  selectedMatColorId,
+  selectedGlazingId,
+  onApplyCustomFinerWorksDimensions,
   isPostVisualizationModal = false,
   headOnPhotoLabel,
   artworkTitle,
@@ -881,6 +897,32 @@ export const ScaleCalibrationPage: React.FC<ScaleCalibrationPageProps> = ({
     PRINT_SIZES[effectiveRecommendation.recommendedSizeId] ??
     PRINT_SIZES['24x36'];
   const isErrorBlocked = Boolean(effectiveRecommendation.hasScaleInaccuracyError);
+
+  const standardFwSpec = buildFinerWorksProductSpec({
+    mediaId: selectedMediaId ?? 42,
+    printWidthIn: recommendedSizeSpec.widthInches,
+    printHeightIn: recommendedSizeSpec.heightInches,
+    frameProfileId: selectedFrameId,
+    matWidthId: selectedMatWidthId,
+    matColorId: selectedMatColorId ?? 'archival-ivory',
+    glazingId: selectedGlazingId ?? 'clear-acrylic',
+  });
+
+  const customFwSpec = buildFinerWorksProductSpec({
+    mediaId: selectedMediaId ?? 42,
+    printWidthIn: Math.round(
+      effectiveRecommendation.calculatedInnerPictureWidthInches ??
+        recommendedSizeSpec.widthInches
+    ),
+    printHeightIn: Math.round(
+      effectiveRecommendation.calculatedInnerPictureHeightInches ??
+        recommendedSizeSpec.heightInches
+    ),
+    frameProfileId: selectedFrameId,
+    matWidthId: selectedMatWidthId,
+    matColorId: selectedMatColorId ?? 'archival-ivory',
+    glazingId: selectedGlazingId ?? 'clear-acrylic',
+  });
 
   return (
     <section
@@ -1627,28 +1669,114 @@ export const ScaleCalibrationPage: React.FC<ScaleCalibrationPageProps> = ({
 
                 <div
                   data-testid="recommended-art-piece-details"
-                  className="mt-2 rounded-lg border border-[#DFD7C8] bg-[#FAF6EE] p-2.5 text-xs text-[#1F1C18] space-y-1"
+                  className="mt-2 rounded-lg border border-[#DFD7C8] bg-[#FAF6EE] p-2.5 text-xs text-[#1F1C18] space-y-1.5"
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-3">
                     <span className="text-[#57534E]">Recommended Print Canvas:</span>
-                    <span className="font-semibold">
+                    <span className="font-semibold text-right">
                       {recommendedSizeSpec.labelInches} ({recommendedSizeSpec.labelCm})
                     </span>
                   </div>
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-3">
                     <span className="text-[#57534E]">Matched Frame &amp; Mat:</span>
-                    <span className="font-semibold">
+                    <span className="font-semibold text-right">
                       {frameSpec.name}
                       {matInches > 0 ? ` + ${matInches}" Mat` : ' · Full-Bleed'}
                     </span>
                   </div>
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-3">
                     <span className="text-[#57534E]">Total Outer Wall Footprint:</span>
-                    <span className="font-semibold text-[#9E5A3C]">
+                    <span className="font-semibold text-[#9E5A3C] text-right">
                       {effectiveRecommendation.suggestedEditionOuterWidthInches}&quot; ×{' '}
                       {effectiveRecommendation.suggestedEditionOuterHeightInches}&quot;
                     </span>
                   </div>
+                </div>
+
+                {/* Archival Standard vs. Custom-Milled Specification Card (Requirement #6) */}
+                <div
+                  data-testid="caliper-finerworks-custom-spec-card"
+                  className="mt-2.5 rounded-lg border border-[#DFD7C8] bg-[#FAF6EE] p-3 text-xs text-[#1F1C18] space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2 border-b border-[#DFD7C8] pb-1.5">
+                    <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-[#9E5A3C]">
+                      Archival Standard vs. Custom-Milled Spec
+                    </span>
+                    <span className="font-mono text-[10px] text-[#57534E] text-right">
+                      300 PPI Archival Master
+                    </span>
+                  </div>
+
+                  <div
+                    data-testid="caliper-finerworks-standard-sku"
+                    className="rounded border border-[#DFD7C8]/80 bg-[#F5F0E6]/70 p-2.5 space-y-1.5"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-semibold text-[#4A3B32]">
+                        Nearest Standard Archival Edition:
+                      </span>
+                      <span className="font-semibold text-[#1F1C18] text-right">
+                        {recommendedSizeSpec.labelInches} (Outer{' '}
+                        {standardFwSpec.physicalDimensions.frameOuterWidthIn}&quot; ×{' '}
+                        {standardFwSpec.physicalDimensions.frameOuterHeightIn}&quot;)
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-1 font-mono text-[10px] text-[#57534E]">
+                      <span>Standard Archival SKU:</span>
+                      <span className="break-all rounded bg-[#EAE3D5]/70 px-2 py-0.5 font-mono text-[10px] font-semibold text-[#2E4A3E]">
+                        {standardFwSpec.productCode}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div
+                    data-testid="caliper-finerworks-custom-sku"
+                    className="rounded border border-[#9E5A3C]/40 bg-[#F5F0E6] p-2.5 space-y-1.5"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-semibold text-[#9E5A3C]">
+                        Exact Custom-Milled Archival Edition:
+                      </span>
+                      <span className="font-semibold text-[#1F1C18] text-right">
+                        {customFwSpec.physicalDimensions.printWidthIn}&quot; ×{' '}
+                        {customFwSpec.physicalDimensions.printHeightIn}&quot; (Outer{' '}
+                        {customFwSpec.physicalDimensions.frameOuterWidthIn}&quot; ×{' '}
+                        {customFwSpec.physicalDimensions.frameOuterHeightIn}&quot;)
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-1 font-mono text-[10px] text-[#57534E]">
+                      <span>
+                        300 PPI Master: {customFwSpec.physicalDimensions.optimalWidthPx300Ppi}×
+                        {customFwSpec.physicalDimensions.optimalHeightPx300Ppi} px
+                      </span>
+                      <span className="break-all rounded bg-[#EAE3D5]/70 px-2 py-0.5 font-mono text-[10px] font-semibold text-[#2E4A3E]">
+                        {customFwSpec.productCode}
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    data-testid="apply-custom-finerworks-size-btn"
+                    disabled={isErrorBlocked}
+                    onClick={() => {
+                      onApplyCustomFinerWorksDimensions?.(
+                        customFwSpec.physicalDimensions.printWidthIn,
+                        customFwSpec.physicalDimensions.printHeightIn,
+                        customFwSpec
+                      );
+                      onApplyScaleAndCreate();
+                    }}
+                    className={`w-full min-h-[44px] inline-flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${
+                      isErrorBlocked
+                        ? 'border-[#C9BFA8] bg-[#DFD7C8] text-[#78716C] cursor-not-allowed'
+                        : 'border-[#9E5A3C] bg-[#FAF6EE] text-[#9E5A3C] hover:bg-[#9E5A3C] hover:text-[#FAF6EE] cursor-pointer'
+                    }`}
+                  >
+                    <span>
+                      {`Apply Custom-Milled Archival Edition (${customFwSpec.physicalDimensions.printWidthIn}" × ${customFwSpec.physicalDimensions.printHeightIn}")`}
+                    </span>
+                  </button>
                 </div>
 
                 <p className="mt-2 text-xs text-[#57534E] leading-relaxed">

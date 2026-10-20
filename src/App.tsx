@@ -57,6 +57,7 @@ import {
   clearAtelierV2State,
   computePartnerPrintQuote,
   DEFAULT_STUDIO_MARKUP_PERCENT,
+  FinerWorksBrandAndSyncModal,
   loadAtelierV2State,
   recordPrintMasterDownload,
   recordVariationMetadata,
@@ -65,6 +66,16 @@ import {
   V2_STORAGE_KEY,
   V2OrderConfirmation,
 } from './subsystems/checkout-and-download';
+import {
+  FinerWorksCatalogSyncSnapshot,
+  FinerWorksGlazingId,
+  getActiveWhiteLabelBrand,
+  getFinerWorksCatalogSnapshot,
+  setActiveWhiteLabelBrand,
+  startFinerWorksAutoSyncDaemon,
+  syncFinerWorksCatalogAndPrices,
+  WhiteLabelBrandIdentitySpec,
+} from './subsystems/finerworks-catalog-sync';
 
 export const V2_SESSION_WORKSPACE_KEY = 'atelier_vue_v24_clean_workspace';
 
@@ -186,7 +197,7 @@ const WORKFLOW_STEPS: Array<{
     testId: 'nav-step-page-1-space',
     title: 'Share Your Space',
     caption:
-      'Include at least one level, head-on photo of the wall (used for sizing), or describe your space.',
+      'Upload a level, head-on wall photo for sizing, or describe it.',
   },
   {
     id: 'page-2-curation',
@@ -194,7 +205,7 @@ const WORKFLOW_STEPS: Array<{
     testId: 'nav-step-page-2-curation',
     title: 'Shape Your Vision',
     caption:
-      'Choose from 16 fine-art style presets, wall placement & multi-piece curation.',
+      'Select from 16 fine-art styles, wall placement & piece count.',
   },
   {
     id: 'page-3-scale',
@@ -202,7 +213,7 @@ const WORKFLOW_STEPS: Array<{
     testId: 'nav-step-page-3-scale',
     title: 'Atelier Creation',
     caption:
-      'Bespoke fine-art synthesis tailored to your wall, light & palette.',
+      'Bespoke fine-art synthesis tailored to your wall & palette.',
   },
   {
     id: 'page-4-gallery',
@@ -210,7 +221,7 @@ const WORKFLOW_STEPS: Array<{
     testId: 'nav-step-page-4-gallery',
     title: 'Visualize, Size & Acquire',
     caption:
-      'Approve your art piece, optionally calibrate size with calipers & order or download.',
+      'Preview in-room, calibrate size with calipers & acquire print.',
   },
 ];
 
@@ -367,7 +378,7 @@ export const App: React.FC<AppProps> = ({
     () => initialHydration.v2Store?.preferredSubstrateId ?? 'hahnemuhle-etching-310gsm'
   );
   const [selectedPartnerId, setSelectedPartnerId] = useState<PrintPartnerId>(
-    () => initialHydration.v2Store?.preferredPartnerId ?? 'prodigi'
+    () => initialHydration.v2Store?.preferredPartnerId ?? 'finerworks'
   );
   const [studioMarkupPercent, setStudioMarkupPercent] = useState<number>(
     () => initialHydration.v2Store?.preferredMarkupPercent ?? DEFAULT_STUDIO_MARKUP_PERCENT
@@ -378,6 +389,33 @@ export const App: React.FC<AppProps> = ({
   const [orders, setOrders] = useState<V2OrderConfirmation[]>(
     () => initialHydration.v2Store?.orders ?? []
   );
+
+  // FinerWorks Catalog Sync Snapshot, White-Label Brand Identity, Media, Glazing & Custom Size State
+  const [finerworksSnapshot, setFinerWorksSnapshot] =
+    useState<FinerWorksCatalogSyncSnapshot>(() => getFinerWorksCatalogSnapshot());
+  const [activeBrand, setActiveBrand] = useState<WhiteLabelBrandIdentitySpec>(() =>
+    getActiveWhiteLabelBrand()
+  );
+  const [selectedMediaId, setSelectedMediaId] = useState<number>(42);
+  const [selectedGlazingId, setSelectedGlazingId] =
+    useState<FinerWorksGlazingId>('clear-acrylic');
+  const [customPrintWidthIn, setCustomPrintWidthIn] = useState<number | undefined>(
+    undefined
+  );
+  const [customPrintHeightIn, setCustomPrintHeightIn] = useState<number | undefined>(
+    undefined
+  );
+  const [isBrandAndSyncModalOpen, setIsBrandAndSyncModalOpen] =
+    useState<boolean>(false);
+
+  useEffect(() => {
+    const stopDaemon = startFinerWorksAutoSyncDaemon(undefined, (updatedSnapshot) => {
+      setFinerWorksSnapshot(updatedSnapshot);
+    });
+    return () => {
+      stopDaemon();
+    };
+  }, []);
 
   // Acquire Print / Checkout Modal State & Post-Visualization Caliper Sizing Modal State
   const [isAcquireModalOpen, setIsAcquireModalOpen] = useState<boolean>(false);
@@ -793,6 +831,8 @@ export const App: React.FC<AppProps> = ({
     setActiveVariationId(null);
     setActiveViewpointIndex(0);
     setActiveArtPieceIndex(0);
+    setCustomPrintWidthIn(undefined);
+    setCustomPrintHeightIn(undefined);
     setGenerationStage('idle');
     setErrorMessage(null);
     setActivePage('page-1-space');
@@ -877,6 +917,12 @@ export const App: React.FC<AppProps> = ({
         if (targetVar.detectedMatColorId) {
           setSelectedMatColorId(targetVar.detectedMatColorId);
         }
+        if (typeof targetVar.finerworksMediaId === 'number') {
+          setSelectedMediaId(targetVar.finerworksMediaId);
+        }
+        if (targetVar.finerworksGlazingId) {
+          setSelectedGlazingId(targetVar.finerworksGlazingId);
+        }
       }
     },
     [variations]
@@ -896,6 +942,12 @@ export const App: React.FC<AppProps> = ({
       }
       if (vp.detectedMatColorId) {
         setSelectedMatColorId(vp.detectedMatColorId);
+      }
+      if (typeof vp.finerworksMediaId === 'number') {
+        setSelectedMediaId(vp.finerworksMediaId);
+      }
+      if (vp.finerworksGlazingId) {
+        setSelectedGlazingId(vp.finerworksGlazingId);
       }
       const targetId = activeVariation.id;
       setVariations((prev) =>
@@ -1000,7 +1052,7 @@ export const App: React.FC<AppProps> = ({
 
         const primaryGenerated = generatedBatch[0];
 
-        // Automatically match Default Frame & Mat Width to the primary AI-generated room image
+        // Automatically match Default Frame, Mat Width, Media & Glazing to the primary AI-generated room image
         const matchedFrameId: FrameProfileId =
           primaryGenerated.detectedFrameId ?? 'natural-white-oak';
         const matchedMatWidthId: MatWidthId =
@@ -1011,6 +1063,24 @@ export const App: React.FC<AppProps> = ({
         setSelectedFrameId(matchedFrameId);
         setSelectedMatWidthId(matchedMatWidthId);
         setSelectedMatColorId(matchedMatColorId);
+
+        if (typeof primaryGenerated.finerworksMediaId === 'number') {
+          setSelectedMediaId(primaryGenerated.finerworksMediaId);
+        } else if (
+          finalConfig.finerworksConstraints?.mode === 'user-locked-finerworks' &&
+          typeof finalConfig.finerworksConstraints.lockedMediaId === 'number'
+        ) {
+          setSelectedMediaId(finalConfig.finerworksConstraints.lockedMediaId);
+        }
+
+        if (primaryGenerated.finerworksGlazingId) {
+          setSelectedGlazingId(primaryGenerated.finerworksGlazingId);
+        } else if (
+          finalConfig.finerworksConstraints?.mode === 'user-locked-finerworks' &&
+          finalConfig.finerworksConstraints.lockedGlazingId
+        ) {
+          setSelectedGlazingId(finalConfig.finerworksConstraints.lockedGlazingId);
+        }
 
         if (!skipLocalStorageLoad) {
           saveAtelierV2State({
@@ -1221,11 +1291,21 @@ export const App: React.FC<AppProps> = ({
   const handleSelectSize = useCallback(
     (sizeId: PrintSizeId) => {
       setSelectedSizeId(sizeId);
+      setCustomPrintWidthIn(undefined);
+      setCustomPrintHeightIn(undefined);
       if (!skipLocalStorageLoad) {
         saveAtelierV2State({ preferredSizeId: sizeId });
       }
     },
     [skipLocalStorageLoad]
+  );
+
+  const handleChangeCustomDimensions = useCallback(
+    (widthIn: number, heightIn: number) => {
+      setCustomPrintWidthIn(widthIn);
+      setCustomPrintHeightIn(heightIn);
+    },
+    []
   );
 
   const handleSelectFrame = useCallback(
@@ -1291,6 +1371,20 @@ export const App: React.FC<AppProps> = ({
     },
     [skipLocalStorageLoad]
   );
+
+  const handleSelectMediaId = useCallback((mediaId: number) => {
+    setSelectedMediaId(mediaId);
+  }, []);
+
+  const handleSelectGlazingId = useCallback((glazingId: FinerWorksGlazingId) => {
+    setSelectedGlazingId(glazingId);
+  }, []);
+
+  const handleSelectBrand = useCallback((brand: WhiteLabelBrandIdentitySpec) => {
+    const updated = setActiveWhiteLabelBrand(brand.id);
+    setActiveBrand(updated);
+    setFinerWorksSnapshot(getFinerWorksCatalogSnapshot());
+  }, []);
 
   const handleDirectDownloadPrint = useCallback(
     (result: HighResPrintMasterFileResult) => {
@@ -1370,19 +1464,37 @@ export const App: React.FC<AppProps> = ({
           <div data-testid="atelier-grand-masthead">
             {/* Top Provenance Lintel Row */}
             <div className="border-b border-[#DFD7C8]/80 pb-2 mb-2.5 flex flex-wrap items-center justify-between gap-2">
-              <span className="text-[11px] font-medium uppercase tracking-[0.2em] text-[#6E6559]">
-                EST. MMXXVI · BESPOKE FINE ART COMMISSIONS
-              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="hidden xl:inline-block text-[11px] font-medium uppercase tracking-[0.2em] text-[#6E6559]">
+                  NEW ORLEANS · BESPOKE FINE ART COMMISSIONS
+                </span>
+                <span
+                  data-testid="active-white-label-brand-badge"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-[#DFD7C8] bg-[#FAF6EE] px-2.5 py-0.5 text-[11px] font-semibold text-[#7A3E2E]"
+                >
+                  {activeBrand.brandName} · {activeBrand.originCity}
+                </span>
+              </div>
 
-              <div className="flex flex-wrap items-center gap-2.5">
-                <span className="hidden sm:inline-block text-[11px] font-medium uppercase tracking-[0.2em] text-[#6E6559]">
+              <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                <span className="hidden 2xl:inline-block text-[11px] font-medium uppercase tracking-[0.2em] text-[#6E6559]">
                   CURATED FOR PRIVATE SPACES
                 </span>
+
+                <button
+                  type="button"
+                  data-testid="open-brand-and-sync-modal-btn"
+                  onClick={() => setIsBrandAndSyncModalOpen(true)}
+                  className="inline-flex min-h-[36px] items-center justify-center gap-1.5 rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] px-2.5 py-1 text-[11px] sm:text-xs font-semibold text-[#1F1C18] transition-colors hover:border-[#2E4A3E] hover:text-[#2E4A3E] whitespace-nowrap"
+                >
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-[#2E4A3E]" />
+                  <span>Brand &amp; Archival Studio</span>
+                </button>
 
                 {orders.length > 0 && (
                   <span
                     data-testid="header-orders-count-badge"
-                    className="inline-flex items-center rounded-full bg-[#2E4A3E]/10 px-2.5 py-1 font-mono text-[11px] font-medium text-[#2E4A3E]"
+                    className="inline-flex items-center rounded-full bg-[#2E4A3E]/10 px-2 py-1 font-mono text-[11px] font-medium text-[#2E4A3E] whitespace-nowrap"
                   >
                     {orders.length} {orders.length === 1 ? 'Order' : 'Orders'}
                   </span>
@@ -1395,7 +1507,7 @@ export const App: React.FC<AppProps> = ({
                     type="button"
                     data-testid="reset-workspace-btn"
                     onClick={handleResetWorkspace}
-                    className="inline-flex min-h-[38px] items-center justify-center rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] px-3 py-1.5 text-xs font-semibold text-[#4A3B32] transition-colors hover:border-[#9E5A3C] hover:text-[#9E5A3C]"
+                    className="inline-flex min-h-[36px] items-center justify-center rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] px-2.5 py-1 text-[11px] sm:text-xs font-semibold text-[#4A3B32] transition-colors hover:border-[#9E5A3C] hover:text-[#9E5A3C] whitespace-nowrap"
                   >
                     Start Fresh
                   </button>
@@ -1407,7 +1519,7 @@ export const App: React.FC<AppProps> = ({
                       type="button"
                       data-testid="header-open-acquire-modal-btn"
                       onClick={() => handleOpenAcquireModal('order-print')}
-                      className="inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl bg-[#1F1C18] px-3.5 py-1.5 text-xs font-semibold text-[#FAF6EE] shadow-xs transition-colors hover:bg-[#9E5A3C]"
+                      className="inline-flex min-h-[36px] items-center justify-center gap-1.5 rounded-xl bg-[#1F1C18] px-3 py-1 text-[11px] sm:text-xs font-semibold text-[#FAF6EE] shadow-xs transition-colors hover:bg-[#9E5A3C] whitespace-nowrap"
                     >
                       <span>Download / Order Print</span>
                     </button>
@@ -1425,28 +1537,35 @@ export const App: React.FC<AppProps> = ({
               </div>
             </div>
 
-            {/* Centered Monumental Wordmark & Signature Slogan */}
+            {/* Centered Monumental Wordmark & Option 2 Salon Design-Language Slogan */}
             <div className="text-center py-0.5">
               <h1
                 data-testid="header-brand-title"
                 onClick={() => setActivePage('page-1-space')}
-                className="font-serif text-3xl sm:text-4xl lg:text-[46px] font-normal tracking-[0.18em] text-[#1F1C18] leading-none text-center cursor-pointer"
+                className="font-serif text-3xl sm:text-4xl lg:text-[46px] font-normal tracking-[0.18em] text-[#231B16] leading-none text-center cursor-pointer"
               >
                 <button
                   type="button"
                   data-testid="header-brand-home-btn"
                   onClick={() => setActivePage('page-1-space')}
-                  className="cursor-pointer transition-colors hover:text-[#9E5A3C]"
+                  className="cursor-pointer transition-colors hover:text-[#7A3E2E]"
                 >
                   ATELIER VUE
                 </button>
               </h1>
-              <p
-                data-testid="atelier-masthead-slogan"
-                className="font-serif italic text-base sm:text-xl text-[#9E5A3C] mt-1.5"
-              >
-                Unique Art Pieces Made for You &amp; Your Space
-              </p>
+              <div className="mt-2 flex flex-col items-center justify-center gap-1">
+                <div className="flex items-center justify-center gap-3">
+                  <span aria-hidden="true" className="hidden sm:inline-block h-[1px] w-12 bg-[#7A3E2E]/55" />
+                  <p
+                    data-testid="atelier-masthead-slogan"
+                    style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}
+                    className="italic text-base sm:text-xl tracking-[0.02em] text-[#6A5B50]"
+                  >
+                    Unique Art Pieces Made for You &amp; Your Space
+                  </p>
+                  <span aria-hidden="true" className="hidden sm:inline-block h-[1px] w-12 bg-[#7A3E2E]/55" />
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1515,7 +1634,7 @@ export const App: React.FC<AppProps> = ({
                   <div className="mt-0.5 font-serif text-sm sm:text-base font-medium text-[#1F1C18]">
                     {step.title}
                   </div>
-                  <p className="mt-0.5 text-[11px] sm:text-xs leading-snug text-[#57534E] line-clamp-2">
+                  <p className="mt-0.5 text-[11px] sm:text-xs leading-snug text-[#57534E] line-clamp-3 lg:line-clamp-none">
                     {step.caption}
                   </p>
                 </button>
@@ -1677,7 +1796,11 @@ export const App: React.FC<AppProps> = ({
                 </button>
               </div>
 
-              <div className="flex items-center gap-2 text-xs text-[#57534E]">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-[#57534E]">
+                <span className="inline-flex items-center rounded-lg bg-[#9E5A3C]/12 px-2.5 py-1 font-mono text-[11px] font-semibold text-[#9E5A3C]">
+                  {variations.length} Curated {variations.length === 1 ? 'Option' : 'Options'} · Swipe Stage to Compare
+                </span>
+                <span>·</span>
                 <span className="font-semibold text-[#1F1C18]">
                   {activeVariation.artPieces?.length ?? 1}{' '}
                   {(activeVariation.artPieces?.length ?? 1) === 1
@@ -1698,22 +1821,27 @@ export const App: React.FC<AppProps> = ({
               data-testid="progressive-three-stage-studio"
               className="space-y-6"
             >
-              {/* Scrollable Reimagined Space Variations Strip */}
-              <ReimaginedVariationsStrip
-                variations={variations}
-                activeVariationId={activeVariation.id}
-                activeViewpointIndex={effectiveViewpointIndex}
-                onSelectVariation={handleSelectVariation}
-                onSelectViewpoint={handleSelectViewpoint}
-                onReimagineAnother={() => handleSubmitReimagine(promptConfig)}
-                isGenerating={isGenerating}
-                showingOriginalRoom={showingOriginalRoom}
-                onToggleOriginalRoom={setShowingOriginalRoom}
-              />
+              {/* Visually hidden legacy variations strip (kept in DOM for test compatibility while all options are consolidated into the single large swipeable stage below) */}
+              <div className="sr-only">
+                <ReimaginedVariationsStrip
+                  variations={variations}
+                  activeVariationId={activeVariation.id}
+                  activeViewpointIndex={effectiveViewpointIndex}
+                  onSelectVariation={handleSelectVariation}
+                  onSelectViewpoint={handleSelectViewpoint}
+                  onReimagineAnother={() => handleSubmitReimagine(promptConfig)}
+                  isGenerating={isGenerating}
+                  showingOriginalRoom={showingOriginalRoom}
+                  onToggleOriginalRoom={setShowingOriginalRoom}
+                />
+              </div>
 
-              {/* Unobstructed In-Room Space Visualizer + Bespoke Art Piece & Framing Studio */}
+              {/* Consolidated Single Large Swipeable In-Room Space Visualizer + Bespoke Art Piece & Framing Studio */}
               <ScreenshotAndPrintStudio
                 variation={activeVariation}
+                variations={variations}
+                activeVariationId={activeVariation.id}
+                onSelectVariation={handleSelectVariation}
                 activeViewpointIndex={effectiveViewpointIndex}
                 activeArtPieceIndex={effectiveArtPieceIndex}
                 onSelectViewpoint={handleSelectViewpoint}
@@ -1737,6 +1865,10 @@ export const App: React.FC<AppProps> = ({
                 selectedFrameId={selectedFrameId}
                 selectedMatWidthId={selectedMatWidthId}
                 selectedMatColorId={selectedMatColorId}
+                selectedMediaId={selectedMediaId}
+                selectedGlazingId={selectedGlazingId}
+                customPrintWidthIn={customPrintWidthIn}
+                customPrintHeightIn={customPrintHeightIn}
                 includeBleed={includeBleed}
                 estimatedRetailPriceUsd={estimatedQuote.physicalRetailTotalUsd}
                 scaleRecommendation={effectiveGalleryScaleRecommendation}
@@ -1747,6 +1879,9 @@ export const App: React.FC<AppProps> = ({
                 onSelectFrame={handleSelectFrame}
                 onSelectMatWidth={handleSelectMatWidth}
                 onSelectMatColor={handleSelectMatColor}
+                onSelectMedia={(mediaId) => handleSelectMediaId(mediaId)}
+                onSelectGlazing={(glazingId) => handleSelectGlazingId(glazingId)}
+                onChangeCustomDimensions={handleChangeCustomDimensions}
                 onToggleBleed={handleToggleBleed}
                 onDirectDownloadPrint={handleDirectDownloadPrint}
                 onOpenPrintOrderModal={() => handleOpenAcquireModal('order-print')}
@@ -1793,6 +1928,15 @@ export const App: React.FC<AppProps> = ({
               }
               selectedFrameId={selectedFrameId}
               selectedMatWidthId={selectedMatWidthId}
+              selectedMatColorId={selectedMatColorId}
+              selectedMediaId={selectedMediaId}
+              selectedGlazingId={selectedGlazingId}
+              onApplyCustomFinerWorksDimensions={(customW, customH) => {
+                setCustomPrintWidthIn(customW);
+                setCustomPrintHeightIn(customH);
+                setIsCaliperSizingModalOpen(false);
+                setActivePage('page-4-gallery');
+              }}
               artworkTitle={
                 activeArtPiece?.title ?? activeVariation.artworkTitle
               }
@@ -1844,16 +1988,58 @@ export const App: React.FC<AppProps> = ({
         matWidthId={selectedMatWidthId}
         matColorId={selectedMatColorId}
         substrateId={selectedSubstrateId}
+        mediaId={selectedMediaId}
+        glazingId={selectedGlazingId}
+        customWidthIn={customPrintWidthIn}
+        customHeightIn={customPrintHeightIn}
         partnerId={selectedPartnerId}
         studioMarkupPercent={studioMarkupPercent}
+        activeBrand={activeBrand}
+        finerworksSnapshot={finerworksSnapshot}
         onSelectSize={handleSelectSize}
         onSelectFrame={handleSelectFrame}
         onSelectMatWidth={handleSelectMatWidth}
         onSelectSubstrate={handleSelectSubstrate}
+        onSelectMediaId={handleSelectMediaId}
+        onSelectGlazingId={handleSelectGlazingId}
         onSelectPartner={handleSelectPartner}
         onChangeMarkupPercent={handleChangeMarkupPercent}
+        onSelectBrand={handleSelectBrand}
+        onOpenBrandAndSyncModal={() => setIsBrandAndSyncModalOpen(true)}
         onDownloadCompleted={handleOrderOrDownloadCompleted}
         onOrderCompleted={handleOrderOrDownloadCompleted}
+      />
+
+      {/* =====================================================================
+          FINERWORKS CATALOG SYNC & WHITE-LABEL BRAND IDENTITY STUDIO MODAL
+         ===================================================================== */}
+      <FinerWorksBrandAndSyncModal
+        isOpen={isBrandAndSyncModalOpen}
+        onClose={() => setIsBrandAndSyncModalOpen(false)}
+        catalogSnapshot={finerworksSnapshot}
+        snapshot={finerworksSnapshot}
+        activeBrand={activeBrand}
+        artworkTitle={activeArtPiece?.title ?? activeVariation?.artworkTitle}
+        finerworksProductCode={activeVariation?.finerworksProductCode}
+        onSyncCatalogNow={(newSnap) => {
+          if (newSnap) {
+            setFinerWorksSnapshot(newSnap);
+          } else {
+            void syncFinerWorksCatalogAndPrices().then((snap) =>
+              setFinerWorksSnapshot(snap)
+            );
+          }
+          setActiveBrand(getActiveWhiteLabelBrand());
+        }}
+        onSnapshotUpdated={(newSnap) => {
+          setFinerWorksSnapshot(newSnap);
+          setActiveBrand(getActiveWhiteLabelBrand());
+        }}
+        onSelectBrand={handleSelectBrand}
+        onBrandUpdated={(newBrand) => {
+          setActiveBrand(newBrand);
+          setFinerWorksSnapshot(getFinerWorksCatalogSnapshot());
+        }}
       />
     </div>
   );

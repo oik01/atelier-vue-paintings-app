@@ -1,5 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import {
+  FinerWorksBuiltProductSpec,
+  FinerWorksGlazingId,
+  FinerWorksGlazingSpec,
+  FinerWorksMediaSpec,
+  FinerWorksStandardSizeId,
   FrameProfileId,
   GeneratedArtPiece,
   MatColorId,
@@ -27,6 +32,9 @@ export type { InRoomSpaceVisualizerProps };
 
 export interface ScreenshotAndPrintStudioProps {
   variation: ReimaginedRoomVariation;
+  variations?: ReimaginedRoomVariation[];
+  activeVariationId?: string | null;
+  onSelectVariation?: (variationId: string) => void;
   activeCropBox?: NormalizedCropBox;
   croppedScreenshotDataUrl?: string;
   identicalPrintDataUrl?: string;
@@ -38,6 +46,11 @@ export interface ScreenshotAndPrintStudioProps {
   selectedFrameId?: FrameProfileId;
   selectedMatWidthId?: MatWidthId;
   selectedMatColorId?: MatColorId;
+  selectedMediaId?: number;
+  selectedGlazingId?: FinerWorksGlazingId;
+  selectedFinerWorksSizeId?: FinerWorksStandardSizeId;
+  customPrintWidthIn?: number;
+  customPrintHeightIn?: number;
   includeBleed?: boolean;
   isDownloadingPrint?: boolean;
   estimatedRetailPriceUsd?: number;
@@ -65,6 +78,18 @@ export interface ScreenshotAndPrintStudioProps {
   onSelectFrame?: (frameId: FrameProfileId) => void;
   onSelectMatWidth?: (matWidthId: MatWidthId) => void;
   onSelectMatColor?: (matColorId: MatColorId) => void;
+  onSelectMedia?: (mediaId: number, mediaSpec: FinerWorksMediaSpec) => void;
+  onSelectGlazing?: (
+    glazingId: FinerWorksGlazingId,
+    glazingSpec: FinerWorksGlazingSpec
+  ) => void;
+  onSelectFinerWorksSize?: (
+    sizeId: FinerWorksStandardSizeId,
+    widthIn: number,
+    heightIn: number
+  ) => void;
+  onChangeCustomDimensions?: (widthIn: number, heightIn: number) => void;
+  onFinerWorksProductSpecChange?: (spec: FinerWorksBuiltProductSpec) => void;
   onToggleBleed?: (includeBleed: boolean) => void;
   onDirectDownloadPrint?: (result: HighResPrintMasterFileResult) => void | Promise<void>;
   onOpenPrintOrderModal?: () => void;
@@ -90,6 +115,9 @@ export interface ScreenshotAndPrintStudioProps {
 
 export const ScreenshotAndPrintStudio: React.FC<ScreenshotAndPrintStudioProps> = ({
   variation,
+  variations,
+  activeVariationId,
+  onSelectVariation,
   activeCropBox,
   croppedScreenshotDataUrl,
   identicalPrintDataUrl,
@@ -101,6 +129,11 @@ export const ScreenshotAndPrintStudio: React.FC<ScreenshotAndPrintStudioProps> =
   selectedFrameId,
   selectedMatWidthId,
   selectedMatColorId,
+  selectedMediaId,
+  selectedGlazingId,
+  selectedFinerWorksSizeId,
+  customPrintWidthIn,
+  customPrintHeightIn,
   includeBleed,
   isDownloadingPrint = false,
   estimatedRetailPriceUsd,
@@ -114,6 +147,11 @@ export const ScreenshotAndPrintStudio: React.FC<ScreenshotAndPrintStudioProps> =
   onSelectFrame,
   onSelectMatWidth,
   onSelectMatColor,
+  onSelectMedia,
+  onSelectGlazing,
+  onSelectFinerWorksSize,
+  onChangeCustomDimensions,
+  onFinerWorksProductSpecChange,
   onToggleBleed,
   onDirectDownloadPrint,
   onOpenPrintOrderModal,
@@ -143,6 +181,15 @@ export const ScreenshotAndPrintStudio: React.FC<ScreenshotAndPrintStudioProps> =
   );
   const [internalMatColorId, setInternalMatColorId] =
     useState<MatColorId>(variation.detectedMatColorId ?? 'archival-ivory');
+  const [internalMediaId, setInternalMediaId] = useState<number>(
+    selectedMediaId ??
+      variation.finerworksMediaId ??
+      variation.finerworksVerification?.matchedMediaId ??
+      42
+  );
+  const [internalGlazingId, setInternalGlazingId] = useState<FinerWorksGlazingId>(
+    selectedGlazingId ?? variation.finerworksGlazingId ?? 'clear-acrylic'
+  );
   const [internalIncludeBleed, setInternalIncludeBleed] = useState<boolean>(false);
   const [internalViewpointIndex, setInternalViewpointIndex] = useState<number>(
     activeViewpointIndex ?? variation.activeViewpointIndex ?? 0
@@ -203,6 +250,16 @@ export const ScreenshotAndPrintStudio: React.FC<ScreenshotAndPrintStudioProps> =
     if (selectedMatColorId === undefined && variation.detectedMatColorId) {
       setInternalMatColorId(variation.detectedMatColorId);
     }
+    if (selectedMediaId === undefined) {
+      setInternalMediaId(
+        variation.finerworksMediaId ??
+          variation.finerworksVerification?.matchedMediaId ??
+          42
+      );
+    }
+    if (selectedGlazingId === undefined) {
+      setInternalGlazingId(variation.finerworksGlazingId ?? 'clear-acrylic');
+    }
   }, [
     variation.id,
     variation.activeViewpointIndex,
@@ -210,11 +267,16 @@ export const ScreenshotAndPrintStudio: React.FC<ScreenshotAndPrintStudioProps> =
     variation.detectedFrameId,
     variation.detectedMatWidthId,
     variation.detectedMatColorId,
+    variation.finerworksMediaId,
+    variation.finerworksVerification?.matchedMediaId,
+    variation.finerworksGlazingId,
     activeViewpointIndex,
     activeArtPieceIndex,
     selectedFrameId,
     selectedMatWidthId,
     selectedMatColorId,
+    selectedMediaId,
+    selectedGlazingId,
   ]);
 
   const effectiveViewpointIndex =
@@ -241,6 +303,8 @@ export const ScreenshotAndPrintStudio: React.FC<ScreenshotAndPrintStudioProps> =
   const effectiveFrameId = selectedFrameId ?? internalFrameId;
   const effectiveMatWidthId = selectedMatWidthId ?? internalMatWidthId;
   const effectiveMatColorId = selectedMatColorId ?? internalMatColorId;
+  const effectiveMediaId = selectedMediaId ?? internalMediaId;
+  const effectiveGlazingId = selectedGlazingId ?? internalGlazingId;
   const effectiveIncludeBleed =
     includeBleed !== undefined ? includeBleed : internalIncludeBleed;
 
@@ -319,6 +383,19 @@ export const ScreenshotAndPrintStudio: React.FC<ScreenshotAndPrintStudioProps> =
     onSelectMatColor?.(matColorId);
   };
 
+  const handleSelectMedia = (mediaId: number, mediaSpec: FinerWorksMediaSpec) => {
+    setInternalMediaId(mediaId);
+    onSelectMedia?.(mediaId, mediaSpec);
+  };
+
+  const handleSelectGlazing = (
+    glazingId: FinerWorksGlazingId,
+    glazingSpec: FinerWorksGlazingSpec
+  ) => {
+    setInternalGlazingId(glazingId);
+    onSelectGlazing?.(glazingId, glazingSpec);
+  };
+
   const handleToggleBleed = (nextBleed: boolean) => {
     setInternalIncludeBleed(nextBleed);
     onToggleBleed?.(nextBleed);
@@ -326,6 +403,9 @@ export const ScreenshotAndPrintStudio: React.FC<ScreenshotAndPrintStudioProps> =
 
   const cropperProps: ArtworkScreenshotCropperProps = {
     variation,
+    variations,
+    activeVariationId,
+    onSelectVariation,
     activeCropBox,
     croppedScreenshotDataUrl: effectiveCroppedUrl,
     activeViewpointIndex: effectiveViewpointIndex,
@@ -356,6 +436,11 @@ export const ScreenshotAndPrintStudio: React.FC<ScreenshotAndPrintStudioProps> =
       selectedFrameId: effectiveFrameId,
       selectedMatWidthId: effectiveMatWidthId,
       selectedMatColorId: effectiveMatColorId,
+      selectedMediaId: effectiveMediaId,
+      selectedGlazingId: effectiveGlazingId,
+      selectedFinerWorksSizeId,
+      customPrintWidthIn,
+      customPrintHeightIn,
       includeBleed: effectiveIncludeBleed,
       isDownloadingPrint,
       estimatedRetailPriceUsd,
@@ -366,6 +451,11 @@ export const ScreenshotAndPrintStudio: React.FC<ScreenshotAndPrintStudioProps> =
       onSelectFrame: handleSelectFrame,
       onSelectMatWidth: handleSelectMatWidth,
       onSelectMatColor: handleSelectMatColor,
+      onSelectMedia: handleSelectMedia,
+      onSelectGlazing: handleSelectGlazing,
+      onSelectFinerWorksSize,
+      onChangeCustomDimensions,
+      onFinerWorksProductSpecChange,
       onToggleBleed: handleToggleBleed,
       onDirectDownloadPrint,
       onOpenPrintOrderModal,

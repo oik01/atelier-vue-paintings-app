@@ -98,6 +98,22 @@ function setTextInputValue(
   });
 }
 
+function setSelectValue(el: HTMLSelectElement, value: string): void {
+  const nativeSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLSelectElement.prototype,
+    'value'
+  )?.set;
+  act(() => {
+    if (nativeSetter) {
+      nativeSetter.call(el, value);
+    } else {
+      el.value = value;
+    }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
 function assertZeroAiModelOrSecretTerms(text: string): void {
   const lower = text.toLowerCase();
   expect(lower).not.toContain('astra');
@@ -607,6 +623,144 @@ describe('ATELIER VUE V2.4 — Option 5 Wabi-Sabi Tactile Canvas Studio End-to-E
     expect(mounted.queryByTestId('caliper-sizing-modal')).toBeNull();
     expect(mounted.getByTestId('recommended-size-callout-banner')).toBeTruthy();
     expect(mounted.getByTestId('recommended-size-badge')).toBeTruthy();
+    assertZeroAiModelOrSecretTerms(document.body.textContent ?? '');
+    expect(document.querySelectorAll('a').length).toBe(0);
+  });
+
+  it('7. completes full FinerWorks v3 & White-Label Brand Identity workflow: inspects 5 gallery brands, switches active brand, locks FinerWorks substrate/frame/size on Page 2, verifies Dual AI Checker Agent badges & audit drawer on Page 4, updates media/glazing & live SKU, selects carrier shipping EX, previews 600×180 packing slip & COA, and completes a FinerWorks order', async () => {
+    mounted = mountApp();
+
+    // 1. Verify initial flagship White-Label Brand badge in masthead and open Brand & FinerWorks Studio modal
+    const brandBadge = mounted.getByTestId('active-white-label-brand-badge');
+    expect(brandBadge.textContent).toContain('Atelier Vue');
+    expect(brandBadge.textContent).toContain('New Orleans');
+
+    clickElement(mounted.getByTestId('open-brand-and-sync-modal-btn'));
+    expect(mounted.getByTestId('finerworks-brand-and-sync-modal')).toBeTruthy();
+
+    // Inspect all 5 White-Label Brand Identities
+    const brandIds = [
+      'atelier-koma',
+      'galerie-vauban',
+      'werkstatt-neue',
+      'stillwater-press',
+      'the-nocturne-archive',
+    ] as const;
+    for (const id of brandIds) {
+      expect(mounted.getByTestId(`brand-option-card-${id}`)).toBeTruthy();
+    }
+
+    // Switch active brand to Galerie Vauban and verify header badge & modal previews update
+    clickElement(mounted.getByTestId('brand-option-card-galerie-vauban'));
+    expect(mounted.getByTestId('active-white-label-brand-badge').textContent).toContain(
+      'Galerie Vauban'
+    );
+    expect(
+      (mounted.getByTestId('brand-modal-packing-slip-preview').textContent ?? '').toUpperCase()
+    ).toContain('GALERIE VAUBAN');
+    expect(
+      (mounted.getByTestId('brand-modal-coa-preview').textContent ?? '').toUpperCase()
+    ).toContain('GALERIE VAUBAN');
+
+    // Close Brand & FinerWorks Studio modal
+    clickElement(mounted.getByTestId('close-brand-and-sync-modal-btn'));
+    expect(mounted.queryByTestId('finerworks-brand-and-sync-modal')).toBeNull();
+
+    // 2. Navigate to Page 2, toggle FinerWorks Locked Mode, and lock substrate/frame/size
+    clickElement(mounted.getByTestId('proceed-by-describing-btn'));
+    expect(mounted.getByTestId('workflow-page-2-curation')).toBeTruthy();
+    expect(mounted.getByTestId('finerworks-pre-config-section')).toBeTruthy();
+
+    clickElement(mounted.getByTestId('finerworks-mode-locked'));
+    expect(mounted.getByTestId('finerworks-locked-options-grid')).toBeTruthy();
+
+    const lockMediaSelect = mounted.getByTestId(
+      'finerworks-lock-media-select'
+    ) as HTMLSelectElement;
+    const lockFrameSelect = mounted.getByTestId(
+      'finerworks-lock-frame-select'
+    ) as HTMLSelectElement;
+    const lockSizeSelect = mounted.getByTestId(
+      'finerworks-lock-size-select'
+    ) as HTMLSelectElement;
+
+    setSelectValue(lockMediaSelect, '41'); // Museum Fine Art Matte Rag 310gsm
+    setSelectValue(lockFrameSelect, 'american-black-walnut');
+    setSelectValue(lockSizeSelect, '24x36');
+
+    const lockedSkuPreview = mounted.getByTestId('finerworks-locked-sku-preview');
+    expect(lockedSkuPreview.textContent).toContain('5M41');
+
+    // 3. Generate reimagined room variations and verify Dual AI Checker Agent badges & drawer on Page 4
+    await clickAndFlushPipeline(mounted.getByTestId('reimagine-room-submit-btn'));
+    expect(mounted.getByTestId('workflow-page-4-gallery')).toBeTruthy();
+
+    const provenanceBar = mounted.getByTestId('dual-verification-provenance-bar');
+    expect(provenanceBar).toBeTruthy();
+    expect(mounted.getByTestId('preservation-verification-badge')).toBeTruthy();
+    expect(mounted.getByTestId('finerworks-verification-badge')).toBeTruthy();
+
+    // Open Progressive-Disclosure Dual Audit Receipt Drawer
+    expect(mounted.queryByTestId('dual-audit-receipt-drawer')).toBeNull();
+    clickElement(mounted.getByTestId('toggle-dual-audit-receipt-btn'));
+    const auditDrawer = mounted.getByTestId('dual-audit-receipt-drawer');
+    expect(auditDrawer).toBeTruthy();
+    expect(mounted.getByTestId('audit-check-furniture')).toBeTruthy();
+    expect(mounted.getByTestId('audit-check-room-dimensions')).toBeTruthy();
+    expect(mounted.getByTestId('audit-check-only-art-changed')).toBeTruthy();
+    expect(mounted.getByTestId('audit-check-frame-option')).toBeTruthy();
+    expect(mounted.getByTestId('audit-check-matting-glazing')).toBeTruthy();
+    expect(mounted.getByTestId('audit-check-sizing-aspect')).toBeTruthy();
+    expect(mounted.getByTestId('audit-check-substrate-surface')).toBeTruthy();
+    expect(mounted.getByTestId('audit-matched-product-code')).toBeTruthy();
+
+    // 4. Change FinerWorks media & glazing on Page 4 and verify live SKU updates dynamically
+    expect(mounted.getByTestId('finerworks-media-scroller')).toBeTruthy();
+    expect(mounted.getByTestId('finerworks-glazing-strip')).toBeTruthy();
+
+    const initialProductCode =
+      mounted.getByTestId('finerworks-active-product-code').textContent ?? '';
+    expect(initialProductCode.length).toBeGreaterThan(5);
+
+    clickElement(mounted.getByTestId('finerworks-media-btn-45')); // Cold Press Watercolor Archival 315gsm
+    clickElement(
+      mounted.getByTestId('glazing-option-btn-non-glare-museum-acrylic')
+    );
+
+    const updatedProductCode =
+      mounted.getByTestId('finerworks-active-product-code').textContent ?? '';
+    expect(updatedProductCode).toContain('5M45');
+    expect(updatedProductCode).toContain('G2');
+    expect(updatedProductCode).not.toBe(initialProductCode);
+
+    // 5. Open Checkout Modal (AcquirePrintModal), select carrier shipping EX, preview 600×180 Packing Slip & COA, and complete order
+    clickElement(mounted.getByTestId('open-print-order-modal-btn'));
+    expect(mounted.getByTestId('acquire-print-modal')).toBeTruthy();
+    expect(mounted.getByTestId('finerworks-shipping-options-group')).toBeTruthy();
+
+    const shippingExBtn = mounted.getByTestId('shipping-option-EX');
+    clickElement(shippingExBtn);
+    expect(shippingExBtn.getAttribute('aria-pressed')).toBe('true');
+
+    // Preview 600×180 White-Label Packing Slip & COA
+    expect(mounted.queryByTestId('white-label-packing-slip-preview')).toBeNull();
+    clickElement(mounted.getByTestId('toggle-packing-slip-preview-btn'));
+    const packingSlipPreview = mounted.getByTestId(
+      'white-label-packing-slip-preview'
+    );
+    expect(packingSlipPreview).toBeTruthy();
+    expect((packingSlipPreview.textContent ?? '').toUpperCase()).toContain('GALERIE VAUBAN');
+
+    // Fill sample address and submit FinerWorks order
+    clickElement(mounted.getByTestId('fill-sample-address-btn'));
+    clickElement(mounted.getByTestId('submit-partner-order-btn'));
+
+    const orderReceipt = mounted.getByTestId('order-confirmation-receipt');
+    expect(orderReceipt).toBeTruthy();
+    expect(orderReceipt.textContent).toContain('STATUS: DISPATCHED');
+    expect((orderReceipt.textContent ?? '').toUpperCase()).toContain('GALERIE VAUBAN');
+    expect(orderReceipt.textContent).toContain(updatedProductCode);
+
     assertZeroAiModelOrSecretTerms(document.body.textContent ?? '');
     expect(document.querySelectorAll('a').length).toBe(0);
   });

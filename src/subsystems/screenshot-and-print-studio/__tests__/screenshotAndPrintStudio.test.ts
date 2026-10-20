@@ -12,6 +12,7 @@ import {
   ReimaginedRoomViewpoint,
   RoomPreservationVerification,
 } from '../../../contracts/masterContract';
+import { FINERWORKS_MEDIA_SPECS } from '../../finerworks-catalog-sync';
 import {
   ArtworkScreenshotCropper,
   buildHighResPrintMasterFile,
@@ -1108,4 +1109,609 @@ describe('Subsystem 3: screenshot-and-print-studio (V2.2)', () => {
       expect(framedPreview.getAttribute('data-size-id')).toBe('30x40');
     });
   });
+
+  // =========================================================================
+  // LEAF 3D: FinerWorks v3 Dual-Verification Provenance & Framing Studio (Taste Directives #5 & #6)
+  // =========================================================================
+  describe('Leaf 3D: FinerWorks v3 Dual-Verification Provenance & Framing Studio (Taste Directives #5 & #6)', () => {
+    function triggerNumberInputChange(
+      element: HTMLInputElement,
+      nextValue: string
+    ): void {
+      const descriptor = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value'
+      );
+      if (descriptor?.set) {
+        descriptor.set.call(element, nextValue);
+      } else {
+        element.value = nextValue;
+      }
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    it('19. [Taste Directive #5] ArtworkScreenshotCropper renders dual-verification-provenance-bar with Agent 1 preservation-verification-badge, Agent 2 finerworks-verification-badge (with data-product-code), and progressive-disclosure dual-audit-receipt-drawer with zero leaked model/secret names', async () => {
+      const variation = createMockVariation({
+        finerworksProductCode:
+          'FW-FP-M42-24x36-FRM-WALNUT-150-MAT-2.5in-GLZ-CLEAR',
+        finerworksMediaId: 42,
+        detectedFrameId: 'american-black-walnut',
+        detectedMatWidthId: '2.5in',
+        finerworksVerification: {
+          passed: true,
+          frameOptionValid: true,
+          mattingAndGlazingValid: true,
+          sizingAndAspectRatioValid: true,
+          substrateSurfaceAuthentic: true,
+          matchedFinerWorksProductCode:
+            'FW-FP-M42-24x36-FRM-WALNUT-150-MAT-2.5in-GLZ-CLEAR',
+          matchedFrameProfileId: 'american-black-walnut',
+          matchedFinishesSummary:
+            'American Black Walnut · Hahnemühle Etching · 2.5in Mat · Clear Acrylic',
+          matchedSizeLabel: '24" × 36" (Outer 32" × 44")',
+          matchedMediaId: 42,
+          verifierModelId: 'google/gemini-4-argon',
+          verificationSummary:
+            '2nd-prompt verification via google/gemini-4-argon confirmed BBox crop and FinerWorks compliance.',
+          discrepanciesFound: [],
+          attemptsUsed: 1,
+        },
+      });
+
+      await act(async () => {
+        root.render(
+          React.createElement(ArtworkScreenshotCropper, {
+            variation,
+          })
+        );
+      });
+
+      const dualBar = container.querySelector(
+        '[data-testid="dual-verification-provenance-bar"]'
+      ) as HTMLElement;
+      const agent1Badge = container.querySelector(
+        '[data-testid="preservation-verification-badge"]'
+      ) as HTMLElement;
+      const agent2Badge = container.querySelector(
+        '[data-testid="finerworks-verification-badge"]'
+      ) as HTMLElement;
+      const toggleAuditBtn = container.querySelector(
+        '[data-testid="toggle-dual-audit-receipt-btn"]'
+      ) as HTMLButtonElement;
+
+      expect(dualBar).not.toBeNull();
+      expect(agent1Badge).not.toBeNull();
+      expect(agent1Badge.textContent).toContain(
+        '✓ Room & Furnishings 100% Preserved'
+      );
+      expect(agent2Badge).not.toBeNull();
+      expect(agent2Badge.textContent).toContain(
+        '✓ Archival Frame, Mat & Scale Verified'
+      );
+      expect(agent2Badge.getAttribute('data-product-code')).toBe(
+        'FW-FP-M42-24x36-FRM-WALNUT-150-MAT-2.5in-GLZ-CLEAR'
+      );
+      expect(toggleAuditBtn).not.toBeNull();
+      expect(toggleAuditBtn.textContent).toContain('Inspect Dual Audit ▾');
+
+      // Audit receipt drawer is closed by default
+      expect(
+        container.querySelector('[data-testid="dual-audit-receipt-drawer"]')
+      ).toBeNull();
+
+      // Open dual-audit-receipt-drawer
+      await act(async () => {
+        toggleAuditBtn.click();
+      });
+
+      const auditDrawer = container.querySelector(
+        '[data-testid="dual-audit-receipt-drawer"]'
+      ) as HTMLElement;
+      expect(auditDrawer).not.toBeNull();
+      expect(toggleAuditBtn.textContent).toContain('Inspect Dual Audit ▴');
+
+      // Verify Agent 1 and Agent 2 audit check pills
+      expect(
+        auditDrawer.querySelector('[data-testid="audit-check-furniture"]')
+      ).not.toBeNull();
+      expect(
+        auditDrawer.querySelector('[data-testid="audit-check-room-dimensions"]')
+      ).not.toBeNull();
+      expect(
+        auditDrawer.querySelector('[data-testid="audit-check-only-art-changed"]')
+      ).not.toBeNull();
+      expect(
+        auditDrawer.querySelector('[data-testid="audit-check-frame-option"]')
+      ).not.toBeNull();
+      expect(
+        auditDrawer.querySelector('[data-testid="audit-check-matting-glazing"]')
+      ).not.toBeNull();
+      expect(
+        auditDrawer.querySelector('[data-testid="audit-check-sizing-aspect"]')
+      ).not.toBeNull();
+      expect(
+        auditDrawer.querySelector(
+          '[data-testid="audit-check-substrate-surface"]'
+        )
+      ).not.toBeNull();
+      expect(
+        auditDrawer.querySelector(
+          '[data-testid="audit-matched-product-code"]'
+        )?.textContent
+      ).toBe('FW-FP-M42-24x36-FRM-WALNUT-150-MAT-2.5in-GLZ-CLEAR');
+
+      // Verify zero leaked model or technical secret strings inside the open drawer
+      const fullVisibleText = (container.textContent || '').toLowerCase();
+      expect(fullVisibleText).not.toMatch(
+        /screenshot|crop|2nd-prompt|bounding box|bbox|prompt/i
+      );
+      expect(fullVisibleText).not.toMatch(
+        /astra|gemini|argon|gpt-6|nano banana|openrouter/i
+      );
+      expect(container.querySelectorAll('a[href]').length).toBe(0);
+    });
+
+    it('20. [Taste Directive #6] SizeAndFrameScroller renders proportional moulding scaling, floater-frame-shadow-gap on brushed-brass-float, framed-glazing-reflection-overlay on acrylic glazing, and finerworks-physical-footprint-pill', async () => {
+      const variation = createMockVariation();
+
+      await act(async () => {
+        root.render(
+          React.createElement(SizeAndFrameScroller, {
+            variation,
+            selectedSizeId: '24x36',
+            selectedFrameId: 'natural-white-oak',
+            selectedGlazingId: 'clear-acrylic',
+            onSelectSize: vi.fn(),
+            onSelectFrame: vi.fn(),
+          })
+        );
+      });
+
+      const framedPreview = container.querySelector(
+        '[data-testid="framed-print-preview"]'
+      ) as HTMLElement;
+      const footprintPill = container.querySelector(
+        '[data-testid="finerworks-physical-footprint-pill"]'
+      ) as HTMLElement;
+
+      expect(framedPreview).not.toBeNull();
+      expect(footprintPill).not.toBeNull();
+      expect(footprintPill.textContent).toContain('Outer Frame:');
+      expect(footprintPill.textContent).toContain('300 PPI Optimal');
+      expect(parseInt(framedPreview.style.borderWidth, 10)).toBeGreaterThan(0);
+
+      // Clear acrylic glazing overlay is visible on natural-white-oak + paper
+      const glazingOverlay = container.querySelector(
+        '[data-testid="framed-glazing-reflection-overlay"]'
+      ) as HTMLElement;
+      expect(glazingOverlay).not.toBeNull();
+      expect(glazingOverlay.getAttribute('data-glazing-type')).toBe(
+        'clear-acrylic'
+      );
+      expect(
+        container.querySelector('[data-testid="floater-frame-shadow-gap"]')
+      ).toBeNull();
+
+      // Switch to non-glare-museum-acrylic and brushed-brass-float
+      await act(async () => {
+        root.render(
+          React.createElement(SizeAndFrameScroller, {
+            variation,
+            selectedSizeId: '24x36',
+            selectedFrameId: 'brushed-brass-float',
+            selectedGlazingId: 'non-glare-museum-acrylic',
+            onSelectSize: vi.fn(),
+            onSelectFrame: vi.fn(),
+          })
+        );
+      });
+
+      const floatGap = container.querySelector(
+        '[data-testid="floater-frame-shadow-gap"]'
+      ) as HTMLElement;
+      expect(floatGap).not.toBeNull();
+      expect(floatGap.getAttribute('data-float-offset-inches')).toBe('0.35');
+
+      // Re-render with natural-white-oak + non-glare-museum-acrylic to verify non-glare overlay
+      await act(async () => {
+        root.render(
+          React.createElement(SizeAndFrameScroller, {
+            variation,
+            selectedSizeId: '24x36',
+            selectedFrameId: 'natural-white-oak',
+            selectedGlazingId: 'non-glare-museum-acrylic',
+            onSelectSize: vi.fn(),
+            onSelectFrame: vi.fn(),
+          })
+        );
+      });
+      const museumGlazingOverlay = container.querySelector(
+        '[data-testid="framed-glazing-reflection-overlay"]'
+      ) as HTMLElement;
+      expect(museumGlazingOverlay).not.toBeNull();
+      expect(museumGlazingOverlay.getAttribute('data-glazing-type')).toBe(
+        'non-glare-museum-acrylic'
+      );
+    });
+
+    it('21. [Taste Directive #6] SizeAndFrameScroller & ScreenshotAndPrintStudio render all 10 FINERWORKS_MEDIA_SPECS in finerworks-media-scroller and auto-reset matWidthId and glazingId to "none" with finerworks-canvas-compatibility-notice when selecting Stretched Canvas (12), Metal (21), or Acrylic (31)', async () => {
+      const variation = createMockVariation({
+        detectedMatWidthId: '2.5in',
+        finerworksMediaId: 42,
+        finerworksGlazingId: 'clear-acrylic',
+      });
+      const onSelectMedia = vi.fn();
+      const onSelectMatWidth = vi.fn();
+      const onSelectGlazing = vi.fn();
+
+      await act(async () => {
+        root.render(
+          React.createElement(ScreenshotAndPrintStudio, {
+            variation,
+            onSelectMedia,
+            onSelectMatWidth,
+            onSelectGlazing,
+          })
+        );
+      });
+
+      const mediaScroller = container.querySelector(
+        '[data-testid="finerworks-media-scroller"]'
+      );
+      expect(mediaScroller).not.toBeNull();
+
+      expect(FINERWORKS_MEDIA_SPECS).toHaveLength(10);
+      for (const media of FINERWORKS_MEDIA_SPECS) {
+        expect(
+          container.querySelector(
+            `[data-testid="finerworks-media-btn-${media.mediaId}"]`
+          )
+        ).not.toBeNull();
+      }
+
+      // Initially on MediaID 42 (Hahnemühle Etching), compatibility notice is hidden
+      expect(
+        container.querySelector(
+          '[data-testid="finerworks-canvas-compatibility-notice"]'
+        )
+      ).toBeNull();
+
+      // Click Stretched Canvas (12), Metal (21), and Acrylic (31) -> auto-resets matWidthId and glazingId to 'none'
+      for (const nonMattableId of [12, 21, 31]) {
+        const mediaBtn = container.querySelector(
+          `[data-testid="finerworks-media-btn-${nonMattableId}"]`
+        ) as HTMLButtonElement;
+        await act(async () => {
+          mediaBtn.click();
+        });
+
+        expect(onSelectMedia).toHaveBeenCalledWith(
+          nonMattableId,
+          expect.objectContaining({ mediaId: nonMattableId, canMat: false })
+        );
+        expect(onSelectMatWidth).toHaveBeenCalledWith('none');
+        expect(onSelectGlazing).toHaveBeenCalledWith(
+          'none',
+          expect.objectContaining({ glazingId: 'none' })
+        );
+
+        const framedPreview = container.querySelector(
+          '[data-testid="framed-print-preview"]'
+        ) as HTMLElement;
+        expect(framedPreview.getAttribute('data-media-id')).toBe(
+          String(nonMattableId)
+        );
+        expect(framedPreview.getAttribute('data-mat-width')).toBe('none');
+        expect(framedPreview.getAttribute('data-glazing-id')).toBe('none');
+        expect(
+          container.querySelector(
+            '[data-testid="finerworks-canvas-compatibility-notice"]'
+          )
+        ).not.toBeNull();
+      }
+    });
+
+    it('22. [Taste Directive #6] SizeAndFrameScroller toggles extended-finerworks-sizes-panel (all 10 sizes + custom exact-inch inputs), switches glazing in finerworks-glazing-strip, and toggles finerworks-spec-details-drawer in finerworks-live-spec-bar', async () => {
+      const variation = createMockVariation();
+      const onSelectFinerWorksSize = vi.fn();
+      const onChangeCustomDimensions = vi.fn();
+      const onSelectGlazing = vi.fn();
+      const onFinerWorksProductSpecChange = vi.fn();
+
+      await act(async () => {
+        root.render(
+          React.createElement(ScreenshotAndPrintStudio, {
+            variation,
+            onSelectFinerWorksSize,
+            onChangeCustomDimensions,
+            onSelectGlazing,
+            onFinerWorksProductSpecChange,
+          })
+        );
+      });
+
+      // 1. Extended FinerWorks Sizes Panel & Custom Exact-Inch Inputs
+      const toggleExtendedBtn = container.querySelector(
+        '[data-testid="toggle-extended-finerworks-sizes-btn"]'
+      ) as HTMLButtonElement;
+      expect(toggleExtendedBtn).not.toBeNull();
+      expect(
+        container.querySelector(
+          '[data-testid="extended-finerworks-sizes-panel"]'
+        )
+      ).toBeNull();
+
+      await act(async () => {
+        toggleExtendedBtn.click();
+      });
+
+      const extendedPanel = container.querySelector(
+        '[data-testid="extended-finerworks-sizes-panel"]'
+      ) as HTMLElement;
+      expect(extendedPanel).not.toBeNull();
+
+      const expectedFwSizes = [
+        '8x10',
+        '11x14',
+        '12x16',
+        '16x20',
+        '18x24',
+        '20x30',
+        '24x36',
+        '30x40',
+        '36x48',
+        '40x60',
+      ];
+      for (const fwSizeId of expectedFwSizes) {
+        const sizeBtn = extendedPanel.querySelector(
+          `[data-testid="finerworks-size-btn-${fwSizeId}"]`
+        ) as HTMLButtonElement;
+        expect(sizeBtn).not.toBeNull();
+      }
+
+      // Click 40x60 size button
+      const btn40x60 = extendedPanel.querySelector(
+        '[data-testid="finerworks-size-btn-40x60"]'
+      ) as HTMLButtonElement;
+      await act(async () => {
+        btn40x60.click();
+      });
+      expect(onSelectFinerWorksSize).toHaveBeenCalledWith('40x60', 40, 60);
+
+      // Test custom exact-inch inputs
+      const customWInput = extendedPanel.querySelector(
+        '[data-testid="finerworks-custom-width-input"]'
+      ) as HTMLInputElement;
+      const customHInput = extendedPanel.querySelector(
+        '[data-testid="finerworks-custom-height-input"]'
+      ) as HTMLInputElement;
+      const applyCustomBtn = extendedPanel.querySelector(
+        '[data-testid="apply-custom-dimensions-btn"]'
+      ) as HTMLButtonElement;
+
+      expect(customWInput).not.toBeNull();
+      expect(customHInput).not.toBeNull();
+      expect(applyCustomBtn).not.toBeNull();
+
+      await act(async () => {
+        triggerNumberInputChange(customWInput, '22');
+        triggerNumberInputChange(customHInput, '33');
+      });
+      await act(async () => {
+        applyCustomBtn.click();
+      });
+
+      expect(onChangeCustomDimensions).toHaveBeenCalledWith(22, 33);
+      expect(onSelectFinerWorksSize).toHaveBeenCalledWith('custom', 22, 33);
+
+      // 2. FinerWorks Glazing Strip
+      const glazingStrip = container.querySelector(
+        '[data-testid="finerworks-glazing-strip"]'
+      );
+      expect(glazingStrip).not.toBeNull();
+
+      const glazingNoneBtn = container.querySelector(
+        '[data-testid="glazing-option-btn-none"]'
+      ) as HTMLButtonElement;
+      const glazingClearBtn = container.querySelector(
+        '[data-testid="glazing-option-btn-clear-acrylic"]'
+      ) as HTMLButtonElement;
+      const glazingMuseumBtn = container.querySelector(
+        '[data-testid="glazing-option-btn-non-glare-museum-acrylic"]'
+      ) as HTMLButtonElement;
+
+      expect(glazingNoneBtn).not.toBeNull();
+      expect(glazingClearBtn).not.toBeNull();
+      expect(glazingMuseumBtn).not.toBeNull();
+
+      await act(async () => {
+        glazingMuseumBtn.click();
+      });
+      expect(onSelectGlazing).toHaveBeenCalledWith(
+        'non-glare-museum-acrylic',
+        expect.objectContaining({ glazingId: 'non-glare-museum-acrylic' })
+      );
+
+      // 3. FinerWorks Live Spec Bar & Spec Details Drawer
+      const liveSpecBar = container.querySelector(
+        '[data-testid="finerworks-live-spec-bar"]'
+      );
+      const activeSkuCode = container.querySelector(
+        '[data-testid="finerworks-active-product-code"]'
+      );
+      const livePricePill = container.querySelector(
+        '[data-testid="finerworks-live-price-pill"]'
+      );
+      const toggleSpecBtn = container.querySelector(
+        '[data-testid="toggle-finerworks-spec-details-btn"]'
+      ) as HTMLButtonElement;
+
+      expect(liveSpecBar).not.toBeNull();
+      expect(activeSkuCode).not.toBeNull();
+      expect(activeSkuCode?.textContent).toContain('5M42M9S22X33');
+      expect(livePricePill).not.toBeNull();
+      expect(livePricePill?.textContent).toContain('Wholesale:');
+      expect(livePricePill?.textContent).toContain('Suggested Retail:');
+      expect(toggleSpecBtn).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="finerworks-spec-details-drawer"]')
+      ).toBeNull();
+
+      await act(async () => {
+        toggleSpecBtn.click();
+      });
+
+      const specDrawer = container.querySelector(
+        '[data-testid="finerworks-spec-details-drawer"]'
+      );
+      expect(specDrawer).not.toBeNull();
+      expect(specDrawer?.textContent).toContain(
+        'Itemized Archival Edition Breakdown'
+      );
+      expect(specDrawer?.textContent).toContain('Physical Geometry & Weight');
+      expect(onFinerWorksProductSpecChange).toHaveBeenCalled();
+
+      expect(container.querySelectorAll('a[href]').length).toBe(0);
+      const visibleText = (container.textContent || '').toLowerCase();
+      expect(visibleText).not.toMatch(
+        /screenshot|crop|2nd-prompt|bounding box|bbox|prompt/i
+      );
+      expect(visibleText).not.toMatch(
+        /astra|gemini|argon|gpt-6|nano banana|openrouter/i
+      );
+    });
+
+    it('23. supports true 300-DPI high-resolution mastering up to 40"×60" (12,000 × 18,000 px @ 300 DPI) and renders archival-300dpi-qc-badge', async () => {
+      const metrics40x60 = computeSideBySideFidelityMetrics('36x48', false, 40, 60);
+      expect(metrics40x60.widthPx).toBe(12000);
+      expect(metrics40x60.heightPx).toBe(18000);
+      expect(metrics40x60.dpi).toBe(300);
+      expect(metrics40x60.labelInches).toBe('40" × 60"');
+      expect(metrics40x60.targetResolutionLabel).toBe('12000 × 18000 px @ 300 DPI');
+
+      const master40x60 = await buildHighResPrintMasterFile({
+        identicalPrintDataUrl: 'data:image/png;base64,IDENTICAL_PRINT_SOURCE',
+        sizeId: '36x48',
+        includeBleed: false,
+        title: 'Museum Grand Scale Edition',
+        customWidthIn: 40,
+        customHeightIn: 60,
+      });
+      expect(master40x60.widthPx).toBe(12000);
+      expect(master40x60.heightPx).toBe(18000);
+      expect(master40x60.dpi).toBe(300);
+      expect(master40x60.filename).toBe(
+        'atelier-vue-museum-grand-scale-edition-40x60-300dpi.png'
+      );
+
+      const variation = createMockVariation();
+      await act(async () => {
+        root.render(
+          React.createElement(SizeAndFrameScroller, {
+            variation,
+            selectedSizeId: '36x48',
+            selectedFrameId: 'natural-white-oak',
+            selectedFinerWorksSizeId: '40x60',
+            customPrintWidthIn: 40,
+            customPrintHeightIn: 60,
+            onSelectSize: vi.fn(),
+            onSelectFrame: vi.fn(),
+          })
+        );
+      });
+
+      const qcBadge = container.querySelector(
+        '[data-testid="archival-300dpi-qc-badge"]'
+      ) as HTMLElement;
+      expect(qcBadge).not.toBeNull();
+      expect(qcBadge.textContent).toContain('300 DPI Archival Quality Verified');
+      expect(qcBadge.textContent).toContain(
+        'Zero-Grain High-Definition Master up to 40" × 60"'
+      );
+    });
+
+    it('24. consolidates the 3 Reimagined Space options onto a single swipeable/iterative stage with prev/next arrows and pagination dots', async () => {
+      const opt1 = createMockVariation({
+        id: 'opt-1',
+        artworkTitle: 'Collection I: Travertine Dawn',
+        reimaginedRoomDataUrl: 'data:image/png;base64,OPT_1_ROOM',
+      });
+      const opt2 = createMockVariation({
+        id: 'opt-2',
+        artworkTitle: 'Collection II: Ochre Horizon',
+        reimaginedRoomDataUrl: 'data:image/png;base64,OPT_2_ROOM',
+      });
+      const opt3 = createMockVariation({
+        id: 'opt-3',
+        artworkTitle: 'Collection III: Slate Nocturne',
+        reimaginedRoomDataUrl: 'data:image/png;base64,OPT_3_ROOM',
+      });
+
+      const onSelectVariation = vi.fn();
+
+      await act(async () => {
+        root.render(
+          React.createElement(ScreenshotAndPrintStudio, {
+            variation: opt1,
+            variations: [opt1, opt2, opt3],
+            activeVariationId: 'opt-1',
+            onSelectVariation,
+          })
+        );
+      });
+
+      // Redundant external option switcher bar is sr-only so options are only displayed on the single large stage
+      const externalBar = container.querySelector(
+        '[data-testid="visualizer-option-switcher-bar"]'
+      ) as HTMLElement;
+      expect(externalBar).not.toBeNull();
+      expect(externalBar.className).toContain('sr-only');
+
+      // Stage has swipeable carousel controls and pagination dots
+      const prevBtn = container.querySelector(
+        '[data-testid="stage-prev-option-btn"]'
+      ) as HTMLButtonElement;
+      const nextBtn = container.querySelector(
+        '[data-testid="stage-next-option-btn"]'
+      ) as HTMLButtonElement;
+      const indicator = container.querySelector(
+        '[data-testid="stage-options-carousel-indicator"]'
+      ) as HTMLElement;
+      const dot1 = container.querySelector(
+        '[data-testid="stage-option-dot-1"]'
+      ) as HTMLButtonElement;
+      const activeBadge = container.querySelector(
+        '[data-testid="stage-active-option-badge"]'
+      ) as HTMLElement;
+
+      expect(prevBtn).not.toBeNull();
+      expect(nextBtn).not.toBeNull();
+      expect(indicator).not.toBeNull();
+      expect(activeBadge.textContent).toContain('Option 1 of 3');
+      expect(activeBadge.textContent).toContain(
+        'Swipe or click ← / → to browse all 3 options'
+      );
+
+      // Click Next Option arrow -> advances from Option 1 to Option 2
+      await act(async () => {
+        nextBtn.click();
+      });
+      expect(onSelectVariation).toHaveBeenLastCalledWith('opt-2');
+
+      // Click Option 2 dot directly
+      await act(async () => {
+        dot1.click();
+      });
+      expect(onSelectVariation).toHaveBeenLastCalledWith('opt-2');
+
+      // Click Prev Option arrow -> wraps from Option 1 to Option 3
+      await act(async () => {
+        prevBtn.click();
+      });
+      expect(onSelectVariation).toHaveBeenLastCalledWith('opt-3');
+    });
+  });
 });
+
+

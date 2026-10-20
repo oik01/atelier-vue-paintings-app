@@ -5,6 +5,7 @@ export {
   MAX_STUDIO_MARKUP_PERCENT,
   DIGITAL_MASTER_LICENSE_USD,
   PRINT_SUBSTRATES,
+  SUBSTRATE_SPECS,
   MAT_WIDTH_OPTIONS,
   MAT_COLOR_OPTIONS,
   SAMPLE_SHIPPING_ADDRESS,
@@ -13,6 +14,7 @@ export {
   clampStudioMarkupPercent,
   computePartnerPrintQuote,
   calculatePrintPricing,
+  calculatePrintPriceBreakdown,
   compareAllPartnerQuotes,
   compareAllPartnersPricing,
   computePrintDimensionsWithBleed,
@@ -23,6 +25,11 @@ export {
   sanitizeShippingText,
   validateShippingAddress,
   buildPrintOrderManifestJson,
+  buildPartnerOrderManifest,
+  submitPartnerPrintOrder,
+  calculateFinerWorksOrderBreakdown,
+  validateFinerWorksRecipientAddress,
+  submitFinerWorksPrintOrder,
   loadAtelierV2State,
   saveAtelierV2State,
   recordOrderConfirmation,
@@ -38,9 +45,13 @@ export type {
   ComputePartnerPrintQuoteParams,
   ShippingAddressData,
   ShippingAddressInput,
+  ShippingAddress,
   ShippingValidationResult,
   V2OrderConfirmation,
   AtelierV2PersistedState,
+  CalculateFinerWorksOrderBreakdownOptions,
+  FinerWorksOrderBreakdownResult,
+  FinerWorksOrderConfirmation,
 } from './pricingAndOrderEngine';
 
 export {
@@ -52,3 +63,7 @@ export type {
   AcquirePrintModalMode,
   AcquirePrintModalProps,
 } from './AcquirePrintModal';
+
+export { FinerWorksBrandAndSyncModal } from './FinerWorksBrandAndSyncModal';
+
+export type { FinerWorksBrandAndSyncModalProps } from './FinerWorksBrandAndSyncModal';

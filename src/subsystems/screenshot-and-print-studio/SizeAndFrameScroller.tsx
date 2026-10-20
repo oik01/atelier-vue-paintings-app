@@ -1,5 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  FinerWorksBuiltProductSpec,
+  FinerWorksFrameMouldingSpec,
+  FinerWorksGlazingId,
+  FinerWorksGlazingSpec,
+  FinerWorksMediaSpec,
+  FinerWorksStandardSizeId,
+  FrameMouldingProfileStyle,
   FrameProfileId,
   FRAME_PROFILES,
   GeneratedArtPiece,
@@ -10,6 +17,20 @@ import {
   ReimaginedRoomVariation,
   ScaleCalibrationResult,
 } from '../../contracts/masterContract';
+import {
+  buildFinerWorksProductSpec,
+  FINERWORKS_ALL_231_FRAMES,
+  FINERWORKS_FRAME_COLLECTIONS,
+  FINERWORKS_FRAME_MOULDINGS,
+  FINERWORKS_GLAZING_SPECS,
+  FINERWORKS_MEDIA_SPECS,
+  FINERWORKS_SIZE_OPTIONS,
+  getFinerWorksFrameByProfileId,
+  getFinerWorksGlazingById,
+  getFinerWorksMediaById,
+  getFinerWorksSizeById,
+} from '../finerworks-catalog-sync';
+import { stripOuterFrameAndMatFromArtworkDataUrl } from '../openrouter-ai-engine';
 import {
   buildHighResPrintMasterFile,
   computeSideBySideFidelityMetrics,
@@ -26,6 +47,11 @@ export interface SizeAndFrameScrollerProps {
   selectedFrameId: FrameProfileId;
   selectedMatWidthId?: MatWidthId;
   selectedMatColorId?: MatColorId;
+  selectedMediaId?: number;
+  selectedGlazingId?: FinerWorksGlazingId;
+  selectedFinerWorksSizeId?: FinerWorksStandardSizeId;
+  customPrintWidthIn?: number;
+  customPrintHeightIn?: number;
   includeBleed?: boolean;
   isDownloadingPrint?: boolean;
   estimatedRetailPriceUsd?: number;
@@ -36,6 +62,18 @@ export interface SizeAndFrameScrollerProps {
   onSelectFrame: (frameId: FrameProfileId) => void;
   onSelectMatWidth?: (matWidthId: MatWidthId) => void;
   onSelectMatColor?: (matColorId: MatColorId) => void;
+  onSelectMedia?: (mediaId: number, mediaSpec: FinerWorksMediaSpec) => void;
+  onSelectGlazing?: (
+    glazingId: FinerWorksGlazingId,
+    glazingSpec: FinerWorksGlazingSpec
+  ) => void;
+  onSelectFinerWorksSize?: (
+    sizeId: FinerWorksStandardSizeId,
+    widthIn: number,
+    heightIn: number
+  ) => void;
+  onChangeCustomDimensions?: (widthIn: number, heightIn: number) => void;
+  onFinerWorksProductSpecChange?: (spec: FinerWorksBuiltProductSpec) => void;
   onToggleBleed?: (includeBleed: boolean) => void;
   onDirectDownloadPrint?: (result: HighResPrintMasterFileResult) => void | Promise<void>;
   onOpenPrintOrderModal?: () => void;
@@ -133,10 +171,11 @@ function sanitizeDisplayCopy(text?: string, fallback = ''): string {
   if (!text) return fallback;
   const cleaned = text
     .replace(
-      /astra|gemini\s*argon|gemini\s*4|gpt-6|nano\s*banana|openrouter|openai\/[^\s,)]+|google\/[^\s,)]+/gi,
+      /finerworks|astra|gemini\s*argon|gemini\s*4|gpt-6|nano\s*banana|openrouter|openai\/[^\s,)]+|google\/[^\s,)]+/gi,
       'Atelier Vue'
     )
     .replace(/2nd-prompt/gi, 'Atelier')
+    .replace(/\bprompt\b/gi, 'direction')
     .replace(/bounding\s*box/gi, 'wall placement')
     .replace(/\bbbox\b/gi, 'placement')
     .replace(/crop\s*box/gi, 'frame')
@@ -148,6 +187,50 @@ function sanitizeDisplayCopy(text?: string, fallback = ''): string {
   return cleaned || fallback;
 }
 
+function buildMouldingRailBackground(
+  spec: FinerWorksFrameMouldingSpec,
+  side: 'top' | 'right' | 'bottom' | 'left'
+): string {
+  const p = spec.primaryHex;
+  const s = spec.secondaryHex;
+  const h = spec.highlightHex;
+  const style: FrameMouldingProfileStyle = spec.mouldingProfileStyle || 'flat-contemporary';
+
+  // Angle maps from outer frame edge -> inner rabbet lip for each of the 4 rails
+  const angle =
+    side === 'top'
+      ? '180deg'
+      : side === 'bottom'
+      ? '0deg'
+      : side === 'left'
+      ? '90deg'
+      : '270deg';
+
+  if (style === 'ornate-beaded') {
+    return `linear-gradient(${angle}, ${s} 0%, ${h} 16%, ${p} 34%, ${s} 50%, ${h} 68%, ${p} 84%, ${s} 100%)`;
+  }
+  if (style === 'italian-crown') {
+    return `linear-gradient(${angle}, ${h} 0%, ${p} 30%, ${s} 52%, ${h} 58%, ${p} 86%, ${s} 100%)`;
+  }
+  if (style === 'sloped-bevel') {
+    return `linear-gradient(${angle}, ${h} 0%, ${s} 26%, ${p} 58%, ${h} 86%, ${s} 100%)`;
+  }
+  if (style === 'rustic-barnwood') {
+    return `linear-gradient(${angle}, ${p} 0%, ${h} 22%, ${s} 48%, ${p} 74%, ${s} 100%)`;
+  }
+  if (style === 'floater-l-channel') {
+    return `linear-gradient(${angle}, ${h} 0%, ${p} 42%, ${s} 72%, #0E0D0C 73%, #0E0D0C 100%)`;
+  }
+  if (style === 'metallic-brushed') {
+    return `linear-gradient(${angle}, ${h} 0%, ${p} 38%, ${s} 78%, ${h} 92%, ${s} 100%)`;
+  }
+  // flat-contemporary or unframed
+  if (side === 'top' || side === 'left') {
+    return `linear-gradient(${angle}, ${h} 0%, ${p} 58%, ${s} 100%)`;
+  }
+  return `linear-gradient(${angle}, ${p} 0%, ${s} 68%, ${h} 94%, ${s} 100%)`;
+}
+
 export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
   variation,
   identicalPrintDataUrl,
@@ -157,16 +240,25 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
   selectedFrameId,
   selectedMatWidthId,
   selectedMatColorId,
+  selectedMediaId,
+  selectedGlazingId,
+  selectedFinerWorksSizeId,
+  customPrintWidthIn,
+  customPrintHeightIn,
   includeBleed,
   isDownloadingPrint = false,
   estimatedRetailPriceUsd,
   scaleRecommendation,
-  onOpenCaliperSizingTool,
   onSelectArtPiece,
   onSelectSize,
   onSelectFrame,
   onSelectMatWidth,
   onSelectMatColor,
+  onSelectMedia,
+  onSelectGlazing,
+  onSelectFinerWorksSize,
+  onChangeCustomDimensions,
+  onFinerWorksProductSpecChange,
   onToggleBleed,
   onDirectDownloadPrint,
   onOpenPrintOrderModal,
@@ -182,10 +274,51 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
   const [internalMatColorId, setInternalMatColorId] = useState<MatColorId>(
     variation?.detectedMatColorId ?? 'archival-ivory'
   );
+  const [internalMediaId, setInternalMediaId] = useState<number>(
+    selectedMediaId ??
+      variation?.finerworksMediaId ??
+      variation?.finerworksVerification?.matchedMediaId ??
+      42
+  );
+  const [internalGlazingId, setInternalGlazingId] = useState<FinerWorksGlazingId>(
+    selectedGlazingId ?? variation?.finerworksGlazingId ?? 'clear-acrylic'
+  );
+  const [internalFinerWorksSizeOverride, setInternalFinerWorksSizeOverride] = useState<{
+    sizeId: FinerWorksStandardSizeId;
+    forParentSizeId: PrintSizeId;
+  } | null>(null);
+  const [internalCustomWidthIn, setInternalCustomWidthIn] = useState<number>(
+    customPrintWidthIn ??
+      variation?.customPrintWidthIn ??
+      (PRINT_SIZES[selectedSizeId]?.widthInches ?? 24)
+  );
+  const [internalCustomHeightIn, setInternalCustomHeightIn] = useState<number>(
+    customPrintHeightIn ??
+      variation?.customPrintHeightIn ??
+      (PRINT_SIZES[selectedSizeId]?.heightInches ?? 36)
+  );
+  const [draftCustomWidth, setDraftCustomWidth] = useState<string>(
+    String(
+      customPrintWidthIn ??
+        variation?.customPrintWidthIn ??
+        (PRINT_SIZES[selectedSizeId]?.widthInches ?? 24)
+    )
+  );
+  const [draftCustomHeight, setDraftCustomHeight] = useState<string>(
+    String(
+      customPrintHeightIn ??
+        variation?.customPrintHeightIn ??
+        (PRINT_SIZES[selectedSizeId]?.heightInches ?? 36)
+    )
+  );
+  const [isExtendedSizesOpen, setIsExtendedSizesOpen] = useState<boolean>(false);
+  const [isSpecDetailsOpen, setIsSpecDetailsOpen] = useState<boolean>(false);
   const [internalIncludeBleed, setInternalIncludeBleed] = useState<boolean>(false);
   const [isGeneratingDownload, setIsGeneratingDownload] = useState<boolean>(false);
   const [lastDownloadedResult, setLastDownloadedResult] =
     useState<HighResPrintMasterFileResult | null>(null);
+  const [frameCatalogMode, setFrameCatalogMode] = useState<string>('curated');
+  const [frameSearchQuery, setFrameSearchQuery] = useState<string>('');
 
   useEffect(() => {
     if (typeof activeArtPieceIndex === 'number') {
@@ -194,6 +327,32 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
       setInternalArtPieceIndex(variation.activeArtPieceIndex);
     }
   }, [activeArtPieceIndex, variation?.activeArtPieceIndex, variation?.id]);
+
+  useEffect(() => {
+    if (typeof selectedMediaId === 'number') {
+      setInternalMediaId(selectedMediaId);
+    }
+  }, [selectedMediaId]);
+
+  useEffect(() => {
+    if (selectedGlazingId) {
+      setInternalGlazingId(selectedGlazingId);
+    }
+  }, [selectedGlazingId]);
+
+  useEffect(() => {
+    if (typeof customPrintWidthIn === 'number') {
+      setInternalCustomWidthIn(customPrintWidthIn);
+      setDraftCustomWidth(String(customPrintWidthIn));
+    }
+  }, [customPrintWidthIn]);
+
+  useEffect(() => {
+    if (typeof customPrintHeightIn === 'number') {
+      setInternalCustomHeightIn(customPrintHeightIn);
+      setDraftCustomHeight(String(customPrintHeightIn));
+    }
+  }, [customPrintHeightIn]);
 
   const effectiveScaleRecommendation: ScaleCalibrationResult | null =
     scaleRecommendation !== undefined
@@ -269,10 +428,119 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
     selectedFrameId && FRAME_PROFILES[selectedFrameId]
       ? selectedFrameId
       : 'natural-white-oak';
-  const activeMatWidthId: MatWidthId = selectedMatWidthId ?? internalMatWidthId;
+
+  const activeMediaId: number = selectedMediaId ?? internalMediaId;
+  const activeMediaSpec: FinerWorksMediaSpec = useMemo(
+    () => getFinerWorksMediaById(activeMediaId),
+    [activeMediaId]
+  );
+
+  const rawMatWidthId: MatWidthId = selectedMatWidthId ?? internalMatWidthId;
+  const activeMatWidthId: MatWidthId = activeMediaSpec.canMat
+    ? rawMatWidthId
+    : 'none';
   const activeMatColorId: MatColorId = selectedMatColorId ?? internalMatColorId;
   const activeIncludeBleed: boolean =
     includeBleed !== undefined ? includeBleed : internalIncludeBleed;
+
+  const finerWorksFrameSpec = useMemo(
+    () => getFinerWorksFrameByProfileId(activeFrameId),
+    [activeFrameId]
+  );
+
+  const rawGlazingId: FinerWorksGlazingId = selectedGlazingId ?? internalGlazingId;
+  const effectiveGlazingId: FinerWorksGlazingId =
+    !activeMediaSpec.canGlaze ||
+    !finerWorksFrameSpec.allowGlazing ||
+    activeFrameId === 'unframed-canvas'
+      ? 'none'
+      : rawGlazingId;
+
+  const effectiveFinerWorksSizeId: FinerWorksStandardSizeId = useMemo(() => {
+    if (selectedFinerWorksSizeId) {
+      return selectedFinerWorksSizeId;
+    }
+    if (
+      internalFinerWorksSizeOverride &&
+      internalFinerWorksSizeOverride.forParentSizeId === activeSizeId
+    ) {
+      return internalFinerWorksSizeOverride.sizeId;
+    }
+    return activeSizeId;
+  }, [activeSizeId, internalFinerWorksSizeOverride, selectedFinerWorksSizeId]);
+
+  const effectiveFinerWorksSizeSpec = useMemo(
+    () => getFinerWorksSizeById(effectiveFinerWorksSizeId),
+    [effectiveFinerWorksSizeId]
+  );
+
+  const effectivePrintWidthIn: number = useMemo(() => {
+    const rawW =
+      effectiveFinerWorksSizeId === 'custom'
+        ? customPrintWidthIn ?? internalCustomWidthIn
+        : customPrintWidthIn ?? effectiveFinerWorksSizeSpec.widthInches;
+    return Math.max(
+      activeMediaSpec.minWidthIn,
+      Math.min(activeMediaSpec.maxWidthIn, rawW)
+    );
+  }, [
+    activeMediaSpec.maxWidthIn,
+    activeMediaSpec.minWidthIn,
+    customPrintWidthIn,
+    effectiveFinerWorksSizeId,
+    effectiveFinerWorksSizeSpec.widthInches,
+    internalCustomWidthIn,
+  ]);
+
+  const effectivePrintHeightIn: number = useMemo(() => {
+    const rawH =
+      effectiveFinerWorksSizeId === 'custom'
+        ? customPrintHeightIn ?? internalCustomHeightIn
+        : customPrintHeightIn ?? effectiveFinerWorksSizeSpec.heightInches;
+    return Math.max(
+      activeMediaSpec.minHeightIn,
+      Math.min(activeMediaSpec.maxHeightIn, rawH)
+    );
+  }, [
+    activeMediaSpec.maxHeightIn,
+    activeMediaSpec.minHeightIn,
+    customPrintHeightIn,
+    effectiveFinerWorksSizeId,
+    effectiveFinerWorksSizeSpec.heightInches,
+    internalCustomHeightIn,
+  ]);
+
+  const liveBuiltProductSpec: FinerWorksBuiltProductSpec = useMemo(
+    () =>
+      buildFinerWorksProductSpec({
+        productTypeId: activeMediaSpec.productTypeId,
+        mediaId: activeMediaSpec.mediaId,
+        styleId: activeMediaSpec.defaultStyleId,
+        printWidthIn: effectivePrintWidthIn,
+        printHeightIn: effectivePrintHeightIn,
+        frameProfileId: activeFrameId,
+        finerworksFrameId: finerWorksFrameSpec.finerworksFrameId,
+        matWidthId: activeMatWidthId,
+        matColorId: activeMatColorId,
+        glazingId: effectiveGlazingId,
+      }),
+    [
+      activeFrameId,
+      activeMatColorId,
+      activeMatWidthId,
+      activeMediaSpec.defaultStyleId,
+      activeMediaSpec.mediaId,
+      activeMediaSpec.productTypeId,
+      effectiveGlazingId,
+      effectivePrintHeightIn,
+      effectivePrintWidthIn,
+      finerWorksFrameSpec.finerworksFrameId,
+    ]
+  );
+
+  useEffect(() => {
+    onFinerWorksProductSpecChange?.(liveBuiltProductSpec);
+  }, [liveBuiltProductSpec, onFinerWorksProductSpecChange]);
 
   const sizeSpec = PRINT_SIZES[activeSizeId];
   const frameSpec = FRAME_PROFILES[activeFrameId];
@@ -291,6 +559,81 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
     variation?.identicalPrintMasterDataUrl ||
     FALLBACK_PRINT_SVG;
 
+  const [cleanInnerPrintUrl, setCleanInnerPrintUrl] = useState<string>(activePrintUrl);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCleanInnerPrintUrl(activePrintUrl);
+    if (
+      activePrintUrl &&
+      activePrintUrl.startsWith('data:image/') &&
+      !activePrintUrl.startsWith('data:image/svg+xml')
+    ) {
+      stripOuterFrameAndMatFromArtworkDataUrl(activePrintUrl, {
+        frameId:
+          selectedPiece?.detectedFrameId ??
+          variation?.detectedFrameId ??
+          activeFrameId,
+        matWidthId:
+          selectedPiece?.detectedMatWidthId ??
+          variation?.detectedMatWidthId ??
+          activeMatWidthId,
+        onlyStripIfBorderDetected: true,
+      })
+        .then((cleanedResult) => {
+          if (!cancelled && cleanedResult?.dataUrl) {
+            setCleanInnerPrintUrl(cleanedResult.dataUrl);
+          }
+        })
+        .catch(() => {
+          // keep activePrintUrl on fallback
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activePrintUrl,
+    selectedPiece?.detectedFrameId,
+    selectedPiece?.detectedMatWidthId,
+    variation?.detectedFrameId,
+    variation?.detectedMatWidthId,
+    activeFrameId,
+    activeMatWidthId,
+  ]);
+
+  const visibleFrameSpecs: FinerWorksFrameMouldingSpec[] = useMemo(() => {
+    const query = frameSearchQuery.trim().toLowerCase();
+    const canonicalSpecs = ORDERED_FRAME_IDS.map((id) =>
+      getFinerWorksFrameByProfileId(id)
+    );
+
+    let pool: FinerWorksFrameMouldingSpec[];
+    if (frameCatalogMode === 'curated' && !query) {
+      const activeSpec = getFinerWorksFrameByProfileId(activeFrameId);
+      const isCanonical = ORDERED_FRAME_IDS.includes(activeSpec.profileId);
+      pool = isCanonical ? canonicalSpecs : [activeSpec, ...canonicalSpecs];
+    } else if (frameCatalogMode === 'all' || (frameCatalogMode === 'curated' && query)) {
+      pool = FINERWORKS_FRAME_MOULDINGS;
+    } else {
+      const collectionFrames = FINERWORKS_ALL_231_FRAMES.filter(
+        (f) => f.collectionSlug === frameCatalogMode
+      );
+      pool = collectionFrames.length > 0 ? collectionFrames : FINERWORKS_FRAME_MOULDINGS;
+    }
+
+    if (!query) {
+      return pool;
+    }
+
+    return pool.filter((f) => {
+      const haystack = `${f.name} ${f.sku || ''} ${f.finerworksFrameId} ${
+        f.collectionName || ''
+      } ${f.materialDescription}`.toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [activeFrameId, frameCatalogMode, frameSearchQuery]);
+
   const activeTitle = sanitizeDisplayCopy(
     hasMultiplePieces
       ? selectedPiece?.title
@@ -308,9 +651,26 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
     'Perspective-balanced, lighting-neutral 300-DPI archival edition ready for museum framing.'
   );
 
+  const isExtendedOrCustomSizeActive =
+    effectiveFinerWorksSizeId !== activeSizeId ||
+    typeof customPrintWidthIn === 'number' ||
+    typeof customPrintHeightIn === 'number';
+
   const fidelityMetrics = useMemo(
-    () => computeSideBySideFidelityMetrics(activeSizeId, activeIncludeBleed),
-    [activeSizeId, activeIncludeBleed]
+    () =>
+      computeSideBySideFidelityMetrics(
+        activeSizeId,
+        activeIncludeBleed,
+        isExtendedOrCustomSizeActive ? effectivePrintWidthIn : undefined,
+        isExtendedOrCustomSizeActive ? effectivePrintHeightIn : undefined
+      ),
+    [
+      activeSizeId,
+      activeIncludeBleed,
+      isExtendedOrCustomSizeActive,
+      effectivePrintWidthIn,
+      effectivePrintHeightIn,
+    ]
   );
 
   // Relative scale factor so larger physical sizes visibly scale the preview frame smoothly
@@ -331,20 +691,118 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
   }, [activeSizeId]);
 
   const mouldingBorderPx = useMemo(() => {
-    if (activeFrameId === 'unframed-canvas' || frameSpec.mouldingWidthInches <= 0) {
+    if (
+      activeFrameId === 'unframed-canvas' ||
+      finerWorksFrameSpec.thicknessInches <= 0
+    ) {
       return 0;
     }
-    return Math.max(8, Math.round(frameSpec.mouldingWidthInches * 11));
-  }, [activeFrameId, frameSpec.mouldingWidthInches]);
+    return Math.max(
+      10,
+      Math.round(
+        (finerWorksFrameSpec.thicknessInches / Math.max(8, effectivePrintWidthIn)) *
+          230
+      )
+    );
+  }, [
+    activeFrameId,
+    effectivePrintWidthIn,
+    finerWorksFrameSpec.thicknessInches,
+  ]);
 
   const effectiveMatPaddingPx = useMemo(() => {
-    if (activeMatWidthId === 'none') return 0;
+    if (activeMatWidthId === 'none' || !activeMediaSpec.canMat) return 0;
     return matWidthSpec.paddingPx;
-  }, [activeMatWidthId, matWidthSpec.paddingPx]);
+  }, [activeMatWidthId, activeMediaSpec.canMat, matWidthSpec.paddingPx]);
 
   const handleSelectPiece = (idx: number, piece: GeneratedArtPiece) => {
     setInternalArtPieceIndex(idx);
     onSelectArtPiece?.(idx, piece);
+  };
+
+  const handleSelectCoreSize = (sizeId: PrintSizeId) => {
+    const spec = PRINT_SIZES[sizeId];
+    setInternalFinerWorksSizeOverride(null);
+    setInternalCustomWidthIn(spec.widthInches);
+    setInternalCustomHeightIn(spec.heightInches);
+    setDraftCustomWidth(String(spec.widthInches));
+    setDraftCustomHeight(String(spec.heightInches));
+    onSelectSize(sizeId);
+    onSelectFinerWorksSize?.(sizeId, spec.widthInches, spec.heightInches);
+  };
+
+  const handleSelectExtendedFinerWorksSize = (
+    fwSizeId: FinerWorksStandardSizeId
+  ) => {
+    const fwSpec = getFinerWorksSizeById(fwSizeId);
+    setInternalFinerWorksSizeOverride({
+      sizeId: fwSizeId,
+      forParentSizeId: fwSpec.legacySizeId,
+    });
+    if (fwSizeId !== 'custom') {
+      setInternalCustomWidthIn(fwSpec.widthInches);
+      setInternalCustomHeightIn(fwSpec.heightInches);
+      setDraftCustomWidth(String(fwSpec.widthInches));
+      setDraftCustomHeight(String(fwSpec.heightInches));
+      onSelectSize(fwSpec.legacySizeId);
+      onSelectFinerWorksSize?.(fwSizeId, fwSpec.widthInches, fwSpec.heightInches);
+    } else {
+      const clampedW = Math.max(
+        activeMediaSpec.minWidthIn,
+        Math.min(activeMediaSpec.maxWidthIn, internalCustomWidthIn)
+      );
+      const clampedH = Math.max(
+        activeMediaSpec.minHeightIn,
+        Math.min(activeMediaSpec.maxHeightIn, internalCustomHeightIn)
+      );
+      onSelectSize(fwSpec.legacySizeId);
+      onSelectFinerWorksSize?.('custom', clampedW, clampedH);
+    }
+  };
+
+  const handleApplyCustomDimensions = () => {
+    const parsedW = Number(draftCustomWidth);
+    const parsedH = Number(draftCustomHeight);
+    const clampedW = Math.max(
+      activeMediaSpec.minWidthIn,
+      Math.min(
+        activeMediaSpec.maxWidthIn,
+        Number.isFinite(parsedW) && parsedW > 0 ? parsedW : effectivePrintWidthIn
+      )
+    );
+    const clampedH = Math.max(
+      activeMediaSpec.minHeightIn,
+      Math.min(
+        activeMediaSpec.maxHeightIn,
+        Number.isFinite(parsedH) && parsedH > 0 ? parsedH : effectivePrintHeightIn
+      )
+    );
+    setInternalCustomWidthIn(clampedW);
+    setInternalCustomHeightIn(clampedH);
+    setDraftCustomWidth(String(clampedW));
+    setDraftCustomHeight(String(clampedH));
+    setInternalFinerWorksSizeOverride({
+      sizeId: 'custom',
+      forParentSizeId: activeSizeId,
+    });
+    onChangeCustomDimensions?.(clampedW, clampedH);
+    onSelectFinerWorksSize?.('custom', clampedW, clampedH);
+  };
+
+  const handleSelectMediaSpec = (media: FinerWorksMediaSpec) => {
+    setInternalMediaId(media.mediaId);
+    onSelectMedia?.(media.mediaId, media);
+    if (!media.canMat) {
+      setInternalMatWidthId('none');
+      onSelectMatWidth?.('none');
+      setInternalGlazingId('none');
+      onSelectGlazing?.('none', getFinerWorksGlazingById('none'));
+    }
+  };
+
+  const handleSelectGlazingOption = (glazingSpec: FinerWorksGlazingSpec) => {
+    setInternalGlazingId(glazingSpec.glazingId);
+    onSelectGlazing?.(glazingSpec.glazingId, glazingSpec);
   };
 
   const handleSelectMatWidth = (matWidthId: MatWidthId) => {
@@ -367,10 +825,12 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
     setIsGeneratingDownload(true);
     try {
       const result = await buildHighResPrintMasterFile({
-        identicalPrintDataUrl: activePrintUrl,
+        identicalPrintDataUrl: cleanInnerPrintUrl || activePrintUrl,
         sizeId: activeSizeId,
         includeBleed: activeIncludeBleed,
         title: activeTitle,
+        customWidthIn: isExtendedOrCustomSizeActive ? effectivePrintWidthIn : undefined,
+        customHeightIn: isExtendedOrCustomSizeActive ? effectivePrintHeightIn : undefined,
       });
       setLastDownloadedResult(result);
       await onDirectDownloadPrint?.(result);
@@ -502,84 +962,259 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
         data-testid="print-master-stage"
         className="relative flex flex-col items-center justify-center bg-gradient-to-b from-[#F5F0E6] via-[#EFE9DC] to-[#E8E0D0] px-4 py-6 sm:px-6 sm:py-8"
       >
-        <div className="flex w-full max-w-4xl flex-col items-center justify-center">
-          {/* Outer Museum Frame Moulding */}
-          <div
-            data-testid="framed-print-preview"
-            data-frame-id={activeFrameId}
-            data-size-id={activeSizeId}
-            data-mat-width={activeMatWidthId}
-            data-piece-index={clampedPieceIndex}
-            style={{
-              transform: `scale(${previewScaleRatio})`,
-              transformOrigin: 'center center',
-              borderWidth: `${mouldingBorderPx}px`,
-              borderStyle: mouldingBorderPx > 0 ? 'solid' : 'none',
-              borderColor: frameSpec.primaryHex,
-              backgroundColor: frameSpec.isFloatFrame
-                ? '#1F1C18'
-                : effectiveMatPaddingPx > 0
-                ? matColorSpec.hex
-                : frameSpec.highlightHex,
-              padding: frameSpec.isFloatFrame ? '7px' : '0px',
-              boxShadow:
-                activeFrameId === 'unframed-canvas'
-                  ? '0 18px 38px rgba(31, 28, 24, 0.20), 4px 6px 0px #DFD7C8'
-                  : `0 22px 46px rgba(31, 28, 24, 0.26), inset 0 0 0 2px ${frameSpec.secondaryHex}, inset 0 0 0 3px ${frameSpec.highlightHex}`,
-            }}
-            className="relative transition-all duration-300 ease-out"
-          >
-            {/* Conservation Matboard Layer */}
+        <div className="flex w-full max-w-5xl flex-col items-center justify-center">
+          <div className="flex w-full flex-col items-center justify-center gap-6 lg:flex-row lg:items-center lg:justify-center">
+            {/* Outer Museum Frame Moulding */}
             <div
+              data-testid="framed-print-preview"
+              data-frame-id={activeFrameId}
+              data-size-id={activeSizeId}
+              data-mat-width={activeMatWidthId}
+              data-piece-index={clampedPieceIndex}
+              data-media-id={activeMediaSpec.mediaId}
+              data-glazing-id={effectiveGlazingId}
+              data-product-code={liveBuiltProductSpec.productCode}
+              data-moulding-style={finerWorksFrameSpec.mouldingProfileStyle || 'flat-contemporary'}
               style={{
-                padding: `${effectiveMatPaddingPx}px`,
-                backgroundColor:
-                  effectiveMatPaddingPx > 0 ? matColorSpec.hex : 'transparent',
+                transform: `scale(${previewScaleRatio})`,
+                transformOrigin: 'center center',
+                borderWidth: `${mouldingBorderPx}px`,
+                borderStyle: mouldingBorderPx > 0 ? 'solid' : 'none',
+                borderColor: frameSpec.primaryHex,
+                backgroundColor: finerWorksFrameSpec.isFloatFrame
+                  ? '#1F1C18'
+                  : effectiveMatPaddingPx > 0
+                  ? matColorSpec.hex
+                  : frameSpec.highlightHex,
+                padding: finerWorksFrameSpec.isFloatFrame ? '7px' : '0px',
+                boxShadow:
+                  activeFrameId === 'unframed-canvas'
+                    ? '0 18px 38px rgba(31, 28, 24, 0.20), 4px 6px 0px #DFD7C8'
+                    : `0 24px 52px rgba(31, 28, 24, 0.30), inset 0 0 0 2px ${frameSpec.secondaryHex}, inset 0 0 0 3px ${frameSpec.highlightHex}`,
               }}
-              className="relative transition-all duration-200"
+              className="relative transition-all duration-300 ease-out"
             >
-              {/* Matboard 45-deg Conservation Bevel */}
+              {/* 4-Rail 45° Mitered Museum Moulding Overlay (Sits over the outer frame border with authentic bevel & corner join geometry) */}
+              {mouldingBorderPx > 0 && (
+                <div
+                  data-testid="mitered-frame-rails-overlay"
+                  style={{
+                    position: 'absolute',
+                    inset: `-${mouldingBorderPx}px`,
+                    pointerEvents: 'none',
+                    zIndex: 15,
+                  }}
+                >
+                  {/* Top Mitered Rail */}
+                  <div
+                    data-testid="mitered-rail-top"
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      height: `${mouldingBorderPx}px`,
+                      background: buildMouldingRailBackground(finerWorksFrameSpec, 'top'),
+                      clipPath: `polygon(0 0, 100% 0, calc(100% - ${mouldingBorderPx}px) 100%, ${mouldingBorderPx}px 100%)`,
+                      boxShadow: 'inset 0 1px 1px rgba(255,255,255,0.28), inset 0 -1px 2px rgba(0,0,0,0.35)',
+                    }}
+                  />
+                  {/* Bottom Mitered Rail */}
+                  <div
+                    data-testid="mitered-rail-bottom"
+                    style={{
+                      position: 'absolute',
+                      bottom: 0,
+                      left: 0,
+                      right: 0,
+                      height: `${mouldingBorderPx}px`,
+                      background: buildMouldingRailBackground(finerWorksFrameSpec, 'bottom'),
+                      clipPath: `polygon(${mouldingBorderPx}px 0, calc(100% - ${mouldingBorderPx}px) 0, 100% 100%, 0 100%)`,
+                      boxShadow: 'inset 0 1px 2px rgba(255,255,255,0.20), inset 0 -2px 3px rgba(0,0,0,0.45)',
+                    }}
+                  />
+                  {/* Left Mitered Rail */}
+                  <div
+                    data-testid="mitered-rail-left"
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      bottom: 0,
+                      left: 0,
+                      width: `${mouldingBorderPx}px`,
+                      background: buildMouldingRailBackground(finerWorksFrameSpec, 'left'),
+                      clipPath: `polygon(0 0, ${mouldingBorderPx}px ${mouldingBorderPx}px, ${mouldingBorderPx}px calc(100% - ${mouldingBorderPx}px), 0 100%)`,
+                      boxShadow: 'inset 1px 0 1px rgba(255,255,255,0.25), inset -1px 0 2px rgba(0,0,0,0.32)',
+                    }}
+                  />
+                  {/* Right Mitered Rail */}
+                  <div
+                    data-testid="mitered-rail-right"
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      bottom: 0,
+                      right: 0,
+                      width: `${mouldingBorderPx}px`,
+                      background: buildMouldingRailBackground(finerWorksFrameSpec, 'right'),
+                      clipPath: `polygon(100% 0, 100% 100%, calc(100% - ${mouldingBorderPx}px) calc(100% - ${mouldingBorderPx}px), calc(100% - ${mouldingBorderPx}px) ${mouldingBorderPx}px)`,
+                      boxShadow: 'inset -2px 0 3px rgba(0,0,0,0.42), inset 1px 0 1px rgba(255,255,255,0.18)',
+                    }}
+                  />
+                  {/* Inner Rabbet Lip Shadow Ring */}
+                  <div
+                    style={{
+                      position: 'absolute',
+                      inset: `${mouldingBorderPx}px`,
+                      boxShadow: `inset 0 2px 5px rgba(0,0,0,0.34), 0 0 0 1px ${finerWorksFrameSpec.secondaryHex}`,
+                    }}
+                  />
+                </div>
+              )}
+
+              {/* Floater Frame Shadow Gap Channel (0.35" Open Shadow Gap) */}
+              {finerWorksFrameSpec.isFloatFrame && (
+                <div
+                  data-testid="floater-frame-shadow-gap"
+                  data-float-offset-inches={finerWorksFrameSpec.floatOffsetInches}
+                  className="pointer-events-none absolute inset-0 border-4 border-[#0E0D0C] shadow-inner"
+                />
+              )}
+
+              {/* Conservation Matboard Layer */}
               <div
                 style={{
-                  boxShadow:
-                    effectiveMatPaddingPx > 0
-                      ? `inset 0 1px 4px rgba(31,28,24,0.22), 0 0 0 2px ${matColorSpec.bevelHex}`
-                      : frameSpec.isFloatFrame
-                      ? '0 0 0 1px rgba(0,0,0,0.65)'
-                      : 'none',
+                  padding: `${effectiveMatPaddingPx}px`,
+                  backgroundColor:
+                    effectiveMatPaddingPx > 0 ? matColorSpec.hex : 'transparent',
                 }}
-                className="relative overflow-hidden bg-[#FAF6EE]"
+                className="relative transition-all duration-200"
               >
-                {/* Optional +0.25" Bleed & Trim Guides Overlay */}
-                {activeIncludeBleed && (
-                  <div
-                    data-testid="print-bleed-trim-guides"
-                    className="pointer-events-none absolute inset-1.5 z-10 border border-dashed border-[#1F1C18]/45"
-                  >
-                    <span className="absolute right-1.5 top-1.5 rounded bg-[#1F1C18]/80 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-[#FAF6EE]">
-                      +0.25&quot; Bleed
-                    </span>
-                  </div>
-                )}
+                {/* Matboard 45-deg Conservation Bevel */}
+                <div
+                  style={{
+                    boxShadow:
+                      effectiveMatPaddingPx > 0
+                        ? `inset 0 1px 4px rgba(31,28,24,0.22), 0 0 0 2px ${matColorSpec.bevelHex}`
+                        : finerWorksFrameSpec.isFloatFrame
+                        ? '0 0 0 1px rgba(0,0,0,0.65)'
+                        : 'none',
+                  }}
+                  className="relative overflow-hidden bg-[#FAF6EE]"
+                >
+                  {/* Subtle Optical Glazing Reflection Overlay */}
+                  {effectiveGlazingId !== 'none' && (
+                    <div
+                      data-testid="framed-glazing-reflection-overlay"
+                      data-glazing-type={effectiveGlazingId}
+                      style={{
+                        background:
+                          effectiveGlazingId === 'non-glare-museum-acrylic'
+                            ? 'linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 45%, transparent 70%)'
+                            : 'linear-gradient(135deg, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0.06) 42%, transparent 65%)',
+                      }}
+                      className="pointer-events-none absolute inset-0 z-10"
+                    />
+                  )}
 
-                <img
-                  data-testid="identical-print-preview-img"
-                  src={activePrintUrl}
-                  alt={`${activeTitle} — ${sizeSpec.labelInches} in ${frameSpec.name}`}
-                  className="block h-56 w-44 object-cover sm:h-64 sm:w-52"
-                />
+                  {/* Optional +0.25" Bleed & Trim Guides Overlay */}
+                  {activeIncludeBleed && (
+                    <div
+                      data-testid="print-bleed-trim-guides"
+                      className="pointer-events-none absolute inset-1.5 z-10 border border-dashed border-[#1F1C18]/45"
+                    >
+                      <span className="absolute right-1.5 top-1.5 rounded bg-[#1F1C18]/80 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-[#FAF6EE]">
+                        +0.25&quot; Bleed
+                      </span>
+                    </div>
+                  )}
+
+                  <img
+                    data-testid="identical-print-preview-img"
+                    src={cleanInnerPrintUrl || activePrintUrl}
+                    alt={`${activeTitle} — ${sizeSpec.labelInches} in ${frameSpec.name}`}
+                    className={
+                      (selectedPiece?.internalBounds ?? variation?.detectedCropBox)
+                        ? (selectedPiece?.internalBounds ?? variation!.detectedCropBox).xmax -
+                            (selectedPiece?.internalBounds ?? variation!.detectedCropBox).xmin >=
+                          (selectedPiece?.internalBounds ?? variation!.detectedCropBox).ymax -
+                            (selectedPiece?.internalBounds ?? variation!.detectedCropBox).ymin
+                          ? 'block h-48 w-64 object-cover sm:h-56 sm:w-72'
+                          : 'block h-56 w-44 object-cover sm:h-64 sm:w-52'
+                        : 'block h-48 w-64 object-cover sm:h-56 sm:w-72'
+                    }
+                  />
+                </div>
               </div>
             </div>
+
+            {/* Active Moulding 3D Corner Sample Reference Card (Real Catalogue Photograph) */}
+            {finerWorksFrameSpec.cornerImageUrl && (
+              <div
+                data-testid="active-frame-corner-sample-card"
+                className="flex w-full max-w-[230px] shrink-0 flex-col rounded-xl border border-[#DFD7C8] bg-[#FAF6EE]/95 p-3 shadow-xs"
+              >
+                <div className="mb-1.5 flex items-center justify-between gap-1.5">
+                  <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#9E5A3C]">
+                    3D Corner Sample
+                  </span>
+                  <span className="rounded bg-[#1F1C18] px-1.5 py-0.5 font-mono text-[9px] font-semibold text-[#FAF6EE]">
+                    SKU {finerWorksFrameSpec.sku || `FW-${finerWorksFrameSpec.finerworksFrameId}`}
+                  </span>
+                </div>
+                <div className="relative h-28 w-full overflow-hidden rounded-lg border border-[#DFD7C8] bg-[#EFE9DC]">
+                  <img
+                    data-testid="active-frame-corner-sample-img"
+                    src={finerWorksFrameSpec.cornerImageUrl}
+                    alt={`${frameSpec.name} 3D Corner Sample`}
+                    className="h-full w-full object-cover"
+                  />
+                </div>
+                <p className="mt-2 truncate font-serif text-xs font-semibold text-[#1F1C18]">
+                  {sanitizeDisplayCopy(frameSpec.name, frameSpec.name)}
+                </p>
+                <p className="truncate font-mono text-[10px] text-[#655B50]">
+                  {sanitizeDisplayCopy(
+                    finerWorksFrameSpec.collectionName || 'Curated Gallery Moulding',
+                    'Curated Gallery Moulding'
+                  )}
+                </p>
+                <p className="mt-1 font-mono text-[10px] text-[#4A3B32]">
+                  {finerWorksFrameSpec.thicknessInches}&quot; face ·{' '}
+                  {finerWorksFrameSpec.depthInches}&quot; depth ·{' '}
+                  {finerWorksFrameSpec.rabbetInches}&quot; rabbet
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Physical Frame Footprint Pill */}
+          <div
+            data-testid="finerworks-physical-footprint-pill"
+            className="mt-4 rounded-full border border-[#DFD7C8] bg-[#FAF6EE] px-3.5 py-1.5 font-mono text-[11px] font-medium text-[#1F1C18] shadow-2xs text-center"
+          >
+            Outer Frame: {liveBuiltProductSpec.physicalDimensions.frameOuterWidthIn}&quot; ×{' '}
+            {liveBuiltProductSpec.physicalDimensions.frameOuterHeightIn}&quot; · Print:{' '}
+            {liveBuiltProductSpec.physicalDimensions.printWidthIn}&quot; ×{' '}
+            {liveBuiltProductSpec.physicalDimensions.printHeightIn}&quot; · Moulding:{' '}
+            {finerWorksFrameSpec.thicknessInches}&quot; face /{' '}
+            {finerWorksFrameSpec.rabbetInches}&quot; rabbet · 300 PPI Optimal
           </div>
 
           {/* Live Spec Caption Pill Under Frame */}
-          <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-center">
+          <div className="mt-2.5 flex flex-wrap items-center justify-center gap-2 text-center">
             <span className="rounded-full border border-[#DFD7C8] bg-[#FAF6EE] px-3 py-1 font-mono text-xs font-medium text-[#1F1C18] shadow-2xs">
-              {sizeSpec.labelInches} ({sizeSpec.labelCm}) · {fidelityMetrics.widthPx}×
+              {fidelityMetrics.labelInches} ({fidelityMetrics.labelCm}) · {fidelityMetrics.widthPx}×
               {fidelityMetrics.heightPx} px @ {fidelityMetrics.dpi} DPI
             </span>
+            <span
+              data-testid="archival-300dpi-qc-badge"
+              className="rounded-full border border-[#2E4A3E]/35 bg-[#2E4A3E]/10 px-3 py-1 font-mono text-[11px] font-semibold text-[#2E4A3E] shadow-2xs"
+            >
+              ✓ 300 DPI Archival Quality Verified · Zero-Grain High-Definition Master up to 40&quot; × 60&quot;
+            </span>
             <span className="rounded-full border border-[#DFD7C8] bg-[#FAF6EE] px-3 py-1 text-xs text-[#655B50] shadow-2xs">
-              {frameSpec.name}
+              {frameSpec.name} · {activeMediaSpec.shortName}
               {activeMatWidthId !== 'none'
                 ? ` · ${matWidthSpec.label} (${matColorSpec.label})`
                 : ' · Full-Bleed No Mat'}
@@ -631,7 +1266,7 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
                 <button
                   type="button"
                   data-testid="apply-recommended-size-btn"
-                  onClick={() => onSelectSize(recommendedSizeId)}
+                  onClick={() => handleSelectCoreSize(recommendedSizeId)}
                   className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-[#9E5A3C] px-3.5 py-2 text-xs font-semibold text-[#FAF6EE] shadow-2xs transition-all hover:bg-[#874B30]"
                 >
                   Select Recommended Size ({recommendedDimensionsLabel})
@@ -645,165 +1280,492 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
           </div>
         )}
 
-        {/* 1. Physical Print Size Scroller */}
+        {/* Archival Media / Substrate Selector */}
         <div>
           <div className="mb-2 flex items-center justify-between">
             <label className="font-mono text-xs font-semibold uppercase tracking-wider text-[#1F1C18]">
-              1. Select Archival Print Size ({sizeSpec.scaleDescription})
+              Archival Media &amp; Substrate ({activeMediaSpec.shortName})
             </label>
             <span className="font-mono text-[11px] text-[#655B50]">
-              Scroll horizontally · 300 DPI Master
+              Archival Media #{activeMediaSpec.mediaId} · {activeMediaSpec.gsmOrThicknessLabel}
             </span>
           </div>
 
           <div
-            data-testid="size-scroller"
+            data-testid="finerworks-media-scroller"
             className="flex gap-2.5 overflow-x-auto snap-x pb-1.5"
           >
-            {ORDERED_SIZE_IDS.map((sizeId) => {
-              const spec = PRINT_SIZES[sizeId];
-              const isSelected = activeSizeId === sizeId;
-              const isRecommended =
-                isScaleCalibrated && recommendedSizeId === sizeId;
-
+            {FINERWORKS_MEDIA_SPECS.map((media) => {
+              const isSelected = activeMediaSpec.mediaId === media.mediaId;
               return (
                 <button
-                  key={sizeId}
+                  key={media.mediaId}
                   type="button"
-                  data-testid={`size-option-${sizeId}`}
+                  data-testid={`finerworks-media-btn-${media.mediaId}`}
                   aria-pressed={isSelected}
-                  onClick={() => onSelectSize(sizeId)}
-                  className={`flex min-h-[44px] min-w-[156px] snap-start shrink-0 flex-col items-start justify-between rounded-xl border px-3.5 py-2.5 text-left transition-all ${
+                  onClick={() => handleSelectMediaSpec(media)}
+                  className={`flex min-h-[44px] min-w-[175px] snap-start shrink-0 flex-col items-start justify-between rounded-xl border px-3 py-2 text-left transition-all ${
                     isSelected
                       ? 'border-[#1F1C18] bg-[#1F1C18] text-[#FAF6EE] shadow-xs'
-                      : isRecommended
-                      ? 'border-[#9E5A3C] bg-[#F5F0E6] text-[#1F1C18] ring-1 ring-[#9E5A3C]/40 hover:bg-[#EFE9DC]'
                       : 'border-[#DFD7C8] bg-[#F5F0E6]/70 text-[#1F1C18] hover:border-[#9E5A3C]/50 hover:bg-[#F5F0E6]'
                   }`}
                 >
-                  <div
-                    data-testid={`size-pill-${sizeId}`}
-                    className="flex w-full flex-col items-start"
-                  >
-                    {isRecommended && (
-                      <span
-                        data-testid="recommended-size-badge"
-                        className={`mb-1 inline-flex items-center rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider ${
-                          isSelected
-                            ? 'bg-[#9E5A3C] text-[#FAF6EE]'
-                            : 'bg-[#9E5A3C]/15 text-[#9E5A3C]'
-                        }`}
-                      >
-                        <span data-testid={`recommended-size-badge-${sizeId}`}>
-                          ★ Recommended
-                        </span>
-                      </span>
-                    )}
-
-                    <div className="flex w-full items-baseline justify-between gap-2">
-                      <span className="font-serif text-base font-medium">
-                        {spec.labelInches}
-                      </span>
-                      <span
-                        className={`font-mono text-[10px] ${
-                          isSelected ? 'text-[#FAF6EE]/80' : 'text-[#655B50]'
-                        }`}
-                      >
-                        {spec.labelCm}
-                      </span>
-                    </div>
-                    <span
-                      className={`mt-1 text-[11px] font-medium ${
-                        isSelected ? 'text-[#DFD7C8]' : 'text-[#655B50]'
-                      }`}
-                    >
-                      {spec.scaleDescription}
+                  <span className="text-xs font-semibold leading-snug">
+                    {media.shortName}
+                  </span>
+                  <div className="mt-1 flex w-full items-center justify-between gap-2 font-mono text-[10px]">
+                    <span className={isSelected ? 'text-[#DFD7C8]' : 'text-[#655B50]'}>
+                      {media.gsmOrThicknessLabel}
                     </span>
-                    <span
-                      className={`mt-0.5 font-mono text-[10px] ${
-                        isSelected ? 'text-[#FAF6EE]/75' : 'text-[#655B50]/85'
-                      }`}
-                    >
-                      {spec.printMasterWidthPx}×{spec.printMasterHeightPx} px
+                    <span className={isSelected ? 'text-[#FAF6EE]/75' : 'text-[#9E5A3C]'}>
+                      {media.surfaceFinish}
                     </span>
                   </div>
                 </button>
               );
             })}
           </div>
+
+          {!activeMediaSpec.canMat && (
+            <div
+              data-testid="finerworks-canvas-compatibility-notice"
+              className="mt-2 rounded-xl border border-[#9E5A3C]/40 bg-[#F5F0E6] px-3.5 py-2 text-xs text-[#4A3B32]"
+            >
+              Archival Note: Stretched Canvas, ChromaLuxe Metal &amp; Face-Mounted Acrylic
+              editions are mounted without paper mat board or front acrylic glazing per
+              Atelier Vue museum standards.
+            </div>
+          )}
         </div>
 
-        {/* 2. Museum Frame Moulding Scroller */}
+        {/* 1. Physical Print Size Scroller */}
         <div>
-          <div className="mb-2 flex items-center justify-between">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <label className="font-mono text-xs font-semibold uppercase tracking-wider text-[#1F1C18]">
-              2. Select Museum Frame Moulding
+              1. Select Archival Print Size ({sizeSpec.scaleDescription})
             </label>
-            <span className="text-xs text-[#655B50]">{frameSpec.name}</span>
+            <button
+              type="button"
+              data-testid="toggle-extended-finerworks-sizes-btn"
+              aria-expanded={isExtendedSizesOpen}
+              onClick={() => setIsExtendedSizesOpen((prev) => !prev)}
+              className="min-h-[44px] rounded-xl border border-[#DFD7C8] bg-[#F5F0E6] px-3 py-1.5 font-mono text-[11px] font-semibold text-[#1F1C18] hover:bg-[#DFD7C8]/60 transition-colors cursor-pointer"
+            >
+              {isExtendedSizesOpen
+                ? 'All 10 Archival Sizes & Custom Exact-Inch Sizing ▴'
+                : 'All 10 Archival Sizes & Custom Exact-Inch Sizing ▾'}
+            </button>
           </div>
 
           <div
-            data-testid="frame-scroller"
-            className="flex gap-2.5 overflow-x-auto snap-x pb-1.5"
+            data-testid="size-scroller-strip"
+            className="overflow-x-auto snap-x"
           >
-            {ORDERED_FRAME_IDS.map((frameId) => {
-              const spec = FRAME_PROFILES[frameId];
-              const isSelected = activeFrameId === frameId;
-              const detectedFrameForPiece =
-                selectedPiece?.detectedFrameId ?? variation?.detectedFrameId;
-              const isAiMatchedFrame = detectedFrameForPiece === frameId;
+            <div
+              data-testid="size-scroller"
+              className="flex gap-2.5 overflow-x-auto snap-x pb-1.5"
+            >
+              {ORDERED_SIZE_IDS.map((sizeId) => {
+                const spec = PRINT_SIZES[sizeId];
+                const isSelected = activeSizeId === sizeId;
+                const isRecommended =
+                  isScaleCalibrated && recommendedSizeId === sizeId;
 
-              return (
-                <button
-                  key={frameId}
-                  type="button"
-                  data-testid={`frame-option-${frameId}`}
-                  aria-pressed={isSelected}
-                  onClick={() => onSelectFrame(frameId)}
-                  className={`flex min-h-[44px] min-w-[185px] max-w-[215px] snap-start shrink-0 flex-col justify-between rounded-xl border p-3 text-left transition-all ${
-                    isSelected
-                      ? 'border-[#1F1C18] bg-[#1F1C18] text-[#FAF6EE] shadow-xs'
-                      : isAiMatchedFrame
-                      ? 'border-[#9E5A3C] bg-[#F5F0E6] text-[#1F1C18] ring-1 ring-[#9E5A3C]/35 hover:bg-[#EFE9DC]'
-                      : 'border-[#DFD7C8] bg-[#F5F0E6]/70 text-[#1F1C18] hover:border-[#9E5A3C]/50 hover:bg-[#F5F0E6]'
-                  }`}
-                >
-                  <div>
-                    {isAiMatchedFrame && (
-                      <span
-                        data-testid={`ai-matched-frame-pill-${frameId}`}
-                        className={`mb-1.5 inline-flex items-center rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider ${
-                          isSelected
-                            ? 'bg-[#9E5A3C] text-[#FAF6EE]'
-                            : 'bg-[#9E5A3C]/15 text-[#9E5A3C]'
-                        }`}
-                      >
-                        ★ Rendered Match
-                      </span>
-                    )}
-                    <div className="flex items-center gap-2.5">
-                      {/* Tactile Wood/Metal Moulding Swatch Chip */}
-                      <span
-                        style={{
-                          background: `linear-gradient(135deg, ${spec.highlightHex} 0%, ${spec.primaryHex} 55%, ${spec.secondaryHex} 100%)`,
-                        }}
-                        className="h-5 w-5 shrink-0 rounded-full border border-black/20 shadow-inner"
-                      />
-                      <span className="text-xs font-semibold leading-snug">
-                        {spec.name}
-                      </span>
-                    </div>
-                  </div>
-                  <p
-                    className={`mt-1.5 line-clamp-2 text-[11px] leading-relaxed ${
-                      isSelected ? 'text-[#FAF6EE]/80' : 'text-[#655B50]'
+                return (
+                  <button
+                    key={sizeId}
+                    type="button"
+                    data-testid={`size-option-${sizeId}`}
+                    aria-pressed={isSelected}
+                    onClick={() => handleSelectCoreSize(sizeId)}
+                    className={`flex min-h-[44px] min-w-[156px] snap-start shrink-0 flex-col items-start justify-between rounded-xl border px-3.5 py-2.5 text-left transition-all ${
+                      isSelected
+                        ? 'border-[#1F1C18] bg-[#1F1C18] text-[#FAF6EE] shadow-xs'
+                        : isRecommended
+                        ? 'border-[#9E5A3C] bg-[#F5F0E6] text-[#1F1C18] ring-1 ring-[#9E5A3C]/40 hover:bg-[#EFE9DC]'
+                        : 'border-[#DFD7C8] bg-[#F5F0E6]/70 text-[#1F1C18] hover:border-[#9E5A3C]/50 hover:bg-[#F5F0E6]'
                     }`}
                   >
-                    {spec.materialDescription}
-                  </p>
+                    <div
+                      data-testid={`size-option-btn-${sizeId}`}
+                      className="flex min-h-[44px] w-full flex-col items-start justify-between"
+                    >
+                      <div
+                        data-testid={`size-pill-${sizeId}`}
+                        className="flex w-full flex-col items-start"
+                      >
+                        {isRecommended && (
+                          <span
+                            data-testid="recommended-size-badge"
+                            className={`mb-1 inline-flex items-center rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider ${
+                              isSelected
+                                ? 'bg-[#9E5A3C] text-[#FAF6EE]'
+                                : 'bg-[#9E5A3C]/15 text-[#9E5A3C]'
+                            }`}
+                          >
+                            <span data-testid={`recommended-size-badge-${sizeId}`}>
+                              ★ Recommended
+                            </span>
+                          </span>
+                        )}
+
+                        <div className="flex w-full items-baseline justify-between gap-2">
+                          <span className="font-serif text-base font-medium">
+                            {spec.labelInches}
+                          </span>
+                          <span
+                            className={`font-mono text-[10px] ${
+                              isSelected ? 'text-[#FAF6EE]/80' : 'text-[#655B50]'
+                            }`}
+                          >
+                            {spec.labelCm}
+                          </span>
+                        </div>
+                        <span
+                          className={`mt-1 text-[11px] font-medium ${
+                            isSelected ? 'text-[#DFD7C8]' : 'text-[#655B50]'
+                          }`}
+                        >
+                          {spec.scaleDescription}
+                        </span>
+                        <span
+                          className={`mt-0.5 font-mono text-[10px] ${
+                            isSelected ? 'text-[#FAF6EE]/75' : 'text-[#655B50]/85'
+                          }`}
+                        >
+                          {spec.printMasterWidthPx}×{spec.printMasterHeightPx} px
+                        </span>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Extended 10 FinerWorks Standard Sizes + Custom Exact-Inch Sizing Panel */}
+          {isExtendedSizesOpen && (
+            <div
+              data-testid="extended-finerworks-sizes-panel"
+              className="mt-3 rounded-xl border border-[#DFD7C8] bg-[#F5F0E6] p-3.5 space-y-3"
+            >
+              <div className="flex flex-wrap gap-2">
+                {FINERWORKS_SIZE_OPTIONS.map((fwSize) => {
+                  const isFwSelected = effectiveFinerWorksSizeId === fwSize.id;
+                  return (
+                    <button
+                      key={fwSize.id}
+                      type="button"
+                      data-testid={`finerworks-size-btn-${fwSize.id}`}
+                      aria-pressed={isFwSelected}
+                      onClick={() => handleSelectExtendedFinerWorksSize(fwSize.id)}
+                      className={`min-h-[44px] rounded-xl border px-3 py-1.5 text-left text-xs transition-all ${
+                        isFwSelected
+                          ? 'border-[#1F1C18] bg-[#1F1C18] text-[#FAF6EE]'
+                          : 'border-[#DFD7C8] bg-[#FAF6EE] text-[#1F1C18] hover:border-[#9E5A3C]/50'
+                      }`}
+                    >
+                      <span className="font-semibold">{fwSize.labelInches}</span>{' '}
+                      <span
+                        className={`font-mono text-[10px] ${
+                          isFwSelected ? 'text-[#DFD7C8]' : 'text-[#655B50]'
+                        }`}
+                      >
+                        ({fwSize.scaleCategory})
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex flex-wrap items-end gap-2.5 border-t border-[#DFD7C8] pt-3">
+                <div>
+                  <label
+                    htmlFor="finerworks-custom-width-input"
+                    className="block font-mono text-[10px] font-semibold uppercase text-[#4A3B32]"
+                  >
+                    Custom Width (in · {activeMediaSpec.minWidthIn}&quot;–{activeMediaSpec.maxWidthIn}&quot;)
+                  </label>
+                  <input
+                    id="finerworks-custom-width-input"
+                    data-testid="finerworks-custom-width-input"
+                    type="number"
+                    min={activeMediaSpec.minWidthIn}
+                    max={activeMediaSpec.maxWidthIn}
+                    step="0.5"
+                    value={draftCustomWidth}
+                    onChange={(e) => setDraftCustomWidth(e.target.value)}
+                    className="mt-1 min-h-[44px] w-28 rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] px-3 py-1.5 font-mono text-xs text-[#1F1C18]"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="finerworks-custom-height-input"
+                    className="block font-mono text-[10px] font-semibold uppercase text-[#4A3B32]"
+                  >
+                    Custom Height (in · {activeMediaSpec.minHeightIn}&quot;–{activeMediaSpec.maxHeightIn}&quot;)
+                  </label>
+                  <input
+                    id="finerworks-custom-height-input"
+                    data-testid="finerworks-custom-height-input"
+                    type="number"
+                    min={activeMediaSpec.minHeightIn}
+                    max={activeMediaSpec.maxHeightIn}
+                    step="0.5"
+                    value={draftCustomHeight}
+                    onChange={(e) => setDraftCustomHeight(e.target.value)}
+                    className="mt-1 min-h-[44px] w-28 rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] px-3 py-1.5 font-mono text-xs text-[#1F1C18]"
+                  />
+                </div>
+                <button
+                  type="button"
+                  data-testid="apply-custom-dimensions-btn"
+                  onClick={handleApplyCustomDimensions}
+                  className="min-h-[44px] rounded-xl bg-[#9E5A3C] px-4 py-2 text-xs font-semibold text-[#FAF6EE] hover:bg-[#874B30] transition-colors cursor-pointer"
+                >
+                  Apply Exact-Inch Size
                 </button>
-              );
-            })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* 2. Museum Frame Moulding Scroller (Curated Signatures + All 27 Collections / 231 Mouldings with Real 3D Corner Samples) */}
+        <div>
+          <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <label className="font-mono text-xs font-semibold uppercase tracking-wider text-[#1F1C18]">
+                2. Select Museum Frame Moulding ({FINERWORKS_FRAME_COLLECTIONS.length} Collections ·{' '}
+                {FINERWORKS_ALL_231_FRAMES.length} Mouldings)
+              </label>
+              <p className="text-[11px] text-[#655B50]">
+                Active: {sanitizeDisplayCopy(frameSpec.name, frameSpec.name)} · SKU{' '}
+                {finerWorksFrameSpec.sku || `FW-${finerWorksFrameSpec.finerworksFrameId}`} ·{' '}
+                {sanitizeDisplayCopy(
+                  finerWorksFrameSpec.collectionName || 'Curated Gallery Moulding',
+                  'Curated Gallery Moulding'
+                )}
+              </p>
+            </div>
+            <span className="rounded-full border border-[#DFD7C8] bg-[#F5F0E6] px-2.5 py-1 font-mono text-[10px] font-semibold text-[#4A3B32]">
+              Showing {visibleFrameSpecs.length} Moulding{visibleFrameSpecs.length === 1 ? '' : 's'}
+            </span>
+          </div>
+
+          {/* 27-Collection & 231-Frame Filter Bar */}
+          <div
+            data-testid="frame-collection-filter-bar"
+            className="mb-3 flex flex-col gap-2 rounded-xl border border-[#DFD7C8] bg-[#F5F0E6]/75 p-2.5"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                data-testid="frame-filter-curated"
+                aria-pressed={frameCatalogMode === 'curated' && !frameSearchQuery}
+                onClick={() => {
+                  setFrameCatalogMode('curated');
+                  setFrameSearchQuery('');
+                }}
+                className={`min-h-[38px] rounded-lg border px-3 py-1.5 font-mono text-[11px] font-semibold transition-colors cursor-pointer ${
+                  frameCatalogMode === 'curated' && !frameSearchQuery
+                    ? 'border-[#1F1C18] bg-[#1F1C18] text-[#FAF6EE]'
+                    : 'border-[#DFD7C8] bg-[#FAF6EE] text-[#1F1C18] hover:border-[#9E5A3C]/50'
+                }`}
+              >
+                Curated Signatures (6)
+              </button>
+
+              <button
+                type="button"
+                data-testid="frame-filter-all-231"
+                aria-pressed={frameCatalogMode === 'all'}
+                onClick={() => {
+                  setFrameCatalogMode('all');
+                }}
+                className={`min-h-[38px] rounded-lg border px-3 py-1.5 font-mono text-[11px] font-semibold transition-colors cursor-pointer ${
+                  frameCatalogMode === 'all'
+                    ? 'border-[#1F1C18] bg-[#1F1C18] text-[#FAF6EE]'
+                    : 'border-[#DFD7C8] bg-[#FAF6EE] text-[#1F1C18] hover:border-[#9E5A3C]/50'
+                }`}
+              >
+                All {FINERWORKS_ALL_231_FRAMES.length} Catalogue Mouldings ({FINERWORKS_FRAME_COLLECTIONS.length} Collections)
+              </button>
+
+              <select
+                aria-label="Filter frame mouldings by collection"
+                data-testid="frame-collection-select"
+                value={frameCatalogMode}
+                onChange={(e) => setFrameCatalogMode(e.target.value)}
+                className="min-h-[38px] rounded-lg border border-[#DFD7C8] bg-[#FAF6EE] px-3 py-1.5 font-mono text-[11px] font-medium text-[#1F1C18]"
+              >
+                <option value="curated">Curated Signatures (6 Mouldings)</option>
+                <option value="all">
+                  All {FINERWORKS_FRAME_COLLECTIONS.length} Collections ({FINERWORKS_ALL_231_FRAMES.length} Mouldings)
+                </option>
+                {FINERWORKS_FRAME_COLLECTIONS.map((col) => (
+                  <option key={col.collectionId} value={col.slug}>
+                    {sanitizeDisplayCopy(col.title, col.title)} ({col.frameCount} Mouldings)
+                  </option>
+                ))}
+              </select>
+
+              <input
+                type="search"
+                aria-label="Search frame mouldings by name, SKU, or finish"
+                data-testid="frame-catalog-search-input"
+                placeholder="Search SKU, walnut, gold, barnwood, float..."
+                value={frameSearchQuery}
+                onChange={(e) => setFrameSearchQuery(e.target.value)}
+                className="min-h-[38px] min-w-[210px] flex-1 rounded-lg border border-[#DFD7C8] bg-[#FAF6EE] px-3 py-1.5 font-mono text-[11px] text-[#1F1C18] placeholder:text-[#655B50]/70"
+              />
+            </div>
+
+            {/* Horizontal 27-Collection Quick-Filter Strip */}
+            <div
+              data-testid="frame-collections-pill-strip"
+              className="flex gap-1.5 overflow-x-auto snap-x pb-1"
+            >
+              {FINERWORKS_FRAME_COLLECTIONS.map((col) => {
+                const isActiveCol = frameCatalogMode === col.slug;
+                return (
+                  <button
+                    key={col.collectionId}
+                    type="button"
+                    data-testid={`frame-collection-pill-${col.slug}`}
+                    aria-pressed={isActiveCol}
+                    onClick={() => setFrameCatalogMode(col.slug)}
+                    className={`min-h-[32px] shrink-0 snap-start rounded-lg border px-2.5 py-1 font-mono text-[10px] font-medium transition-colors cursor-pointer ${
+                      isActiveCol
+                        ? 'border-[#9E5A3C] bg-[#9E5A3C] text-[#FAF6EE]'
+                        : 'border-[#DFD7C8] bg-[#FAF6EE] text-[#4A3B32] hover:border-[#9E5A3C]/50'
+                    }`}
+                  >
+                    {sanitizeDisplayCopy(col.title, col.title)} ({col.frameCount})
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div
+            data-testid="frame-scroller-strip"
+            className="overflow-x-auto snap-x"
+          >
+            <div
+              data-testid="frame-scroller"
+              className="flex gap-2.5 overflow-x-auto snap-x pb-1.5"
+            >
+              {visibleFrameSpecs.map((fwFrame) => {
+                const frameId = fwFrame.profileId;
+                const spec = FRAME_PROFILES[frameId] ?? fwFrame;
+                const isSelected = activeFrameId === frameId;
+                const detectedFrameForPiece =
+                  selectedPiece?.detectedFrameId ?? variation?.detectedFrameId;
+                const isAiMatchedFrame = detectedFrameForPiece === frameId;
+
+                const frameOptionSpec = buildFinerWorksProductSpec({
+                  productTypeId: activeMediaSpec.productTypeId,
+                  mediaId: activeMediaSpec.mediaId,
+                  styleId: activeMediaSpec.defaultStyleId,
+                  printWidthIn: effectivePrintWidthIn,
+                  printHeightIn: effectivePrintHeightIn,
+                  frameProfileId: frameId,
+                  finerworksFrameId: fwFrame.finerworksFrameId,
+                  matWidthId: activeMatWidthId,
+                  matColorId: activeMatColorId,
+                  glazingId: effectiveGlazingId,
+                });
+                const framePriceDelta = frameOptionSpec.pricing.addFramePriceUsd;
+
+                return (
+                  <button
+                    key={frameId}
+                    type="button"
+                    data-testid={`frame-option-${frameId}`}
+                    aria-pressed={isSelected}
+                    onClick={() => onSelectFrame(frameId)}
+                    className={`group flex min-h-[44px] min-w-[195px] max-w-[230px] snap-start shrink-0 flex-col justify-between rounded-xl border p-3 text-left transition-all ${
+                      isSelected
+                        ? 'border-[#1F1C18] bg-[#1F1C18] text-[#FAF6EE] shadow-xs'
+                        : isAiMatchedFrame
+                        ? 'border-[#9E5A3C] bg-[#F5F0E6] text-[#1F1C18] ring-1 ring-[#9E5A3C]/35 hover:bg-[#EFE9DC]'
+                        : 'border-[#DFD7C8] bg-[#F5F0E6]/70 text-[#1F1C18] hover:border-[#9E5A3C]/50 hover:bg-[#F5F0E6]'
+                    }`}
+                  >
+                    <div
+                      data-testid={`frame-option-btn-${frameId}`}
+                      className="flex min-h-[44px] w-full flex-col justify-between"
+                    >
+                      <div>
+                        {/* Real 3D Corner Photograph from Catalogue */}
+                        {fwFrame.cornerImageUrl && (
+                          <div className="relative mb-2 h-24 w-full overflow-hidden rounded-lg border border-black/15 bg-[#EFE9DC]">
+                            <img
+                              data-testid={`frame-corner-thumb-${frameId}`}
+                              src={fwFrame.cornerImageUrl}
+                              alt={`${sanitizeDisplayCopy(spec.name, spec.name)} 3D corner sample`}
+                              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                            />
+                            <span className="absolute bottom-1 right-1 rounded bg-[#1F1C18]/85 px-1.5 py-0.5 font-mono text-[9px] font-semibold text-[#FAF6EE]">
+                              SKU {fwFrame.sku || `FW-${fwFrame.finerworksFrameId}`}
+                            </span>
+                          </div>
+                        )}
+                        {isAiMatchedFrame && (
+                          <span
+                            data-testid={`ai-matched-frame-pill-${frameId}`}
+                            className={`mb-1.5 inline-flex items-center rounded-full px-2 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider ${
+                              isSelected
+                                ? 'bg-[#9E5A3C] text-[#FAF6EE]'
+                                : 'bg-[#9E5A3C]/15 text-[#9E5A3C]'
+                            }`}
+                          >
+                            ★ Rendered Match
+                          </span>
+                        )}
+                        <div className="flex items-center gap-2">
+                          {/* Tactile Wood/Metal Moulding Swatch Chip */}
+                          <span
+                            style={{
+                              background: `linear-gradient(135deg, ${spec.highlightHex} 0%, ${spec.primaryHex} 55%, ${spec.secondaryHex} 100%)`,
+                            }}
+                            className="h-4 w-4 shrink-0 rounded-full border border-black/20 shadow-inner"
+                          />
+                          <span className="line-clamp-1 text-xs font-semibold leading-snug">
+                            {sanitizeDisplayCopy(spec.name, spec.name)}
+                          </span>
+                        </div>
+                        {fwFrame.collectionName && (
+                          <p
+                            className={`mt-0.5 truncate font-mono text-[10px] ${
+                              isSelected ? 'text-[#DFD7C8]/85' : 'text-[#9E5A3C]'
+                            }`}
+                          >
+                            {sanitizeDisplayCopy(fwFrame.collectionName, fwFrame.collectionName)}
+                          </p>
+                        )}
+                      </div>
+                      <p
+                        className={`mt-1.5 line-clamp-2 text-[11px] leading-relaxed ${
+                          isSelected ? 'text-[#FAF6EE]/80' : 'text-[#655B50]'
+                        }`}
+                      >
+                        {sanitizeDisplayCopy(spec.materialDescription, spec.materialDescription)}
+                      </p>
+                      <span
+                        className={`mt-1.5 font-mono text-[10px] ${
+                          isSelected ? 'text-[#DFD7C8]' : 'text-[#9E5A3C]'
+                        }`}
+                      >
+                        {frameId === 'unframed-canvas'
+                          ? `Unframed · ${fwFrame.depthInches}" depth · +$0.00`
+                          : `${fwFrame.thicknessInches}" face · ${fwFrame.depthInches}" depth · +$${framePriceDelta.toFixed(2)}`}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 
@@ -815,7 +1777,7 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
                 3. Conservation Matboard Width
               </label>
               <span className="font-mono text-[11px] text-[#655B50]">
-                8-Ply Acid-Free Cotton Rag
+                4-Ply Acid-Free Archival Cotton Rag
               </span>
             </div>
 
@@ -918,6 +1880,166 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
           </div>
         </div>
 
+        {/* 4. FinerWorks Framing Glazing Selector */}
+        <div>
+          <div className="mb-2 flex items-center justify-between">
+            <label className="font-mono text-xs font-semibold uppercase tracking-wider text-[#1F1C18]">
+              4. Archival Acrylic Glazing &amp; UV Filtration
+            </label>
+            <span className="font-mono text-[11px] text-[#655B50]">
+              Optical Shatter-Resistant Acrylic
+            </span>
+          </div>
+
+          <div
+            data-testid="finerworks-glazing-strip"
+            className="grid grid-cols-1 sm:grid-cols-3 gap-2.5"
+          >
+            {FINERWORKS_GLAZING_SPECS.map((g) => {
+              const isSelected = effectiveGlazingId === g.glazingId;
+              const glazingOptionSpec = buildFinerWorksProductSpec({
+                productTypeId: activeMediaSpec.productTypeId,
+                mediaId: activeMediaSpec.mediaId,
+                styleId: activeMediaSpec.defaultStyleId,
+                printWidthIn: effectivePrintWidthIn,
+                printHeightIn: effectivePrintHeightIn,
+                frameProfileId: activeFrameId,
+                matWidthId: activeMatWidthId,
+                matColorId: activeMatColorId,
+                glazingId: g.glazingId,
+              });
+              const glazingPriceDelta = glazingOptionSpec.pricing.addGlazingPriceUsd;
+
+              return (
+                <button
+                  key={g.glazingId}
+                  type="button"
+                  data-testid={`glazing-option-btn-${g.glazingId}`}
+                  aria-pressed={isSelected}
+                  onClick={() => handleSelectGlazingOption(g)}
+                  className={`flex min-h-[44px] flex-col justify-between rounded-xl border p-3 text-left transition-all ${
+                    isSelected
+                      ? 'border-[#1F1C18] bg-[#1F1C18] text-[#FAF6EE]'
+                      : 'border-[#DFD7C8] bg-[#F5F0E6]/70 text-[#1F1C18] hover:border-[#9E5A3C]/50'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold">{g.shortLabel}</span>
+                    <span
+                      className={`font-mono text-[10px] font-semibold ${
+                        isSelected ? 'text-[#DFD7C8]' : 'text-[#9E5A3C]'
+                      }`}
+                    >
+                      {g.uvFilteringPercent > 0
+                        ? `${g.uvFilteringPercent}% UV · +$${glazingPriceDelta.toFixed(2)}`
+                        : '+$0.00'}
+                    </span>
+                  </div>
+                  <span
+                    className={`mt-1 text-[10px] ${
+                      isSelected ? 'text-[#FAF6EE]/75' : 'text-[#655B50]'
+                    }`}
+                  >
+                    {g.description}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Archival Live Specification & Auto-Sync Bar */}
+        <div
+          data-testid="finerworks-live-spec-bar"
+          className="rounded-xl border border-[#DFD7C8] bg-[#F5F0E6] p-3.5 space-y-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-[#4A3B32]">
+                Atelier Edition SKU:
+              </span>
+              <span
+                data-testid="finerworks-active-product-code"
+                className="rounded-lg bg-[#1F1C18] px-2.5 py-1 font-mono text-xs font-semibold text-[#FAF6EE]"
+              >
+                {liveBuiltProductSpec.productCode}
+              </span>
+              <span
+                data-testid="finerworks-live-price-pill"
+                className="rounded-lg border border-[#DFD7C8] bg-[#FAF6EE] px-2.5 py-1 font-mono text-xs font-medium text-[#1F1C18]"
+              >
+                Wholesale: ${liveBuiltProductSpec.pricing.wholesaleTotalUsd.toFixed(2)} ·
+                Suggested Retail: $
+                {liveBuiltProductSpec.pricing.suggestedGeoRetailUsd.toFixed(2)}
+              </span>
+            </div>
+
+            <button
+              type="button"
+              data-testid="toggle-finerworks-spec-details-btn"
+              aria-expanded={isSpecDetailsOpen}
+              onClick={() => setIsSpecDetailsOpen((prev) => !prev)}
+              className="min-h-[44px] rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] hover:bg-[#DFD7C8]/60 px-3 py-1.5 font-mono text-xs font-semibold text-[#1F1C18] transition-colors cursor-pointer"
+            >
+              {isSpecDetailsOpen ? 'Spec & SKU Details ▴' : 'Spec & SKU Details ▾'}
+            </button>
+          </div>
+
+          {isSpecDetailsOpen && (
+            <div
+              data-testid="finerworks-spec-details-drawer"
+              className="grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] p-3 font-mono text-[11px] text-[#1F1C18]"
+            >
+              <div className="space-y-1">
+                <p className="font-bold uppercase tracking-wider text-[#9E5A3C]">
+                  Itemized Archival Edition Breakdown
+                </p>
+                <p>
+                  Base Print ({activeMediaSpec.shortName}): $
+                  {liveBuiltProductSpec.pricing.basePrintPriceUsd.toFixed(2)}
+                </p>
+                <p>
+                  Frame Moulding ({finerWorksFrameSpec.shortLabel}): +$
+                  {liveBuiltProductSpec.pricing.addFramePriceUsd.toFixed(2)}
+                </p>
+                <p>
+                  Conservation Matboard ({activeMatWidthId}): +$
+                  {liveBuiltProductSpec.pricing.addMat1PriceUsd.toFixed(2)}
+                </p>
+                <p>
+                  Acrylic Glazing ({effectiveGlazingId}): +$
+                  {liveBuiltProductSpec.pricing.addGlazingPriceUsd.toFixed(2)}
+                </p>
+              </div>
+              <div className="space-y-1">
+                <p className="font-bold uppercase tracking-wider text-[#9E5A3C]">
+                  Physical Geometry &amp; Weight
+                </p>
+                <p>
+                  Outer Frame: {liveBuiltProductSpec.physicalDimensions.frameOuterWidthIn}&quot; ×{' '}
+                  {liveBuiltProductSpec.physicalDimensions.frameOuterHeightIn}&quot;
+                </p>
+                <p>
+                  Frame Interior: {liveBuiltProductSpec.physicalDimensions.frameInteriorWidthIn}&quot; ×{' '}
+                  {liveBuiltProductSpec.physicalDimensions.frameInteriorHeightIn}&quot;
+                </p>
+                <p>
+                  Mat Outer: {liveBuiltProductSpec.physicalDimensions.matOuterWidthIn}&quot; ×{' '}
+                  {liveBuiltProductSpec.physicalDimensions.matOuterHeightIn}&quot;
+                </p>
+                <p>
+                  Estimated Weight: {liveBuiltProductSpec.physicalDimensions.estimatedWeightOz} oz
+                </p>
+                {liveBuiltProductSpec.validationNotes.length > 0 && (
+                  <p className="text-[#655B50]">
+                    Note: {liveBuiltProductSpec.validationNotes.join(' ')}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Download Confirmation Badge (when triggered) */}
         {lastDownloadedResult && (
           <div
@@ -960,7 +2082,7 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
               Order Printed &amp; Framed Version
               {typeof estimatedRetailPriceUsd === 'number'
                 ? ` · $${estimatedRetailPriceUsd.toFixed(2)}`
-                : ` (${sizeSpec.labelInches})`}
+                : ` · $${liveBuiltProductSpec.pricing.suggestedGeoRetailUsd.toFixed(2)} (${sizeSpec.labelInches})`}
             </span>
           </button>
         </div>

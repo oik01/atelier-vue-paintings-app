@@ -4,11 +4,19 @@ import {
   CURATED_STYLE_PRESET_DESCRIPTIONS,
   CURATED_STYLE_PRESET_LIST,
   DEFAULT_SCALE_CALIBRATION_QUESTIONS,
+  PIECE_COUNT_DESCRIPTIONS,
   STYLE_PRESET_DESCRIPTIONS,
+  WALL_PLACEMENT_DESCRIPTIONS,
   type AiGenerationStage,
   type CuratedArtStylePreset,
   type RoomAngleAsset,
+  assessAndEnhanceImageQualityFor300Dpi,
+  buildFinerWorksOptionsCheckPrompt,
   composeArtworkDetectionPrompt,
+  composeConsolidatedDeliverablesPrompt,
+  composeCuratorialPreAnalysisPrompt,
+  composeFinerWorksCatalogManifestBlock,
+  composeFinerWorksOptionsCheckPrompt,
   composeIdenticalPrintMasterPrompt,
   composeRoomPreservationCheckPrompt,
   composeRoomReimaginePrompt,
@@ -20,9 +28,11 @@ import {
   generateSampleRoomPhotos,
   generateScaleQuestionsWithAi,
   regenerateIdenticalPrintFromCrop,
+  reimagineRoomBatchWithAi,
   reimagineRoomWithAi,
   resolveTargetArtPieceCount,
   sanitizeNormalizedCropBox,
+  verifyFinerWorksOptionsComplianceWithAi,
   verifyRoomPreservationWithAi,
 } from '../index';
 
@@ -1228,4 +1238,587 @@ describe('V2, V2.1, V2.2 & V2.4 Subsystem 1: openrouter-ai-engine', () => {
       expect(largeFromFurniture.rationale).toContain('144"');
     });
   });
+
+  describe('FinerWorks Catalog-Constrained Prompt Engineering & Separate AI Checker Agent #2', () => {
+    const originalFetch = globalThis.fetch;
+
+    beforeEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    it('exports WALL_PLACEMENT_DESCRIPTIONS and PIECE_COUNT_DESCRIPTIONS with complete coverage', () => {
+      expect(WALL_PLACEMENT_DESCRIPTIONS['add-only']).toContain('ADD ART TO OPEN WALL ONLY');
+      expect(WALL_PLACEMENT_DESCRIPTIONS['replace-existing']).toContain('REPLACE EXISTING WALL ART');
+      expect(WALL_PLACEMENT_DESCRIPTIONS.both).toContain('BOTH REPLACE EXISTING ART');
+
+      expect(PIECE_COUNT_DESCRIPTIONS['auto-multi-wall']).toContain('AUTO MULTI-WALL CURATION');
+      expect(PIECE_COUNT_DESCRIPTIONS['single-piece']).toContain('SINGLE FOCAL PIECE CURATION');
+      expect(PIECE_COUNT_DESCRIPTIONS['multi-piece-pair']).toContain('2 COORDINATED ART PIECES');
+      expect(PIECE_COUNT_DESCRIPTIONS['multi-piece-trio']).toContain('3 COORDINATED ART PIECES');
+    });
+
+    it('composes FinerWorks Catalog Manifest Block in curator-selects-finerworks mode with all substrates, mouldings, mats, glazings, sizes, and physical compatibility rules', () => {
+      const manifest = composeFinerWorksCatalogManifestBlock({
+        mode: 'curator-selects-finerworks',
+      });
+
+      expect(manifest).toContain('FINERWORKS ARCHIVAL PRINT & FRAMING CATALOG MANIFEST (v3)');
+      expect(manifest).toContain('MediaID=41');
+      expect(manifest).toContain('MediaID=42');
+      expect(manifest).toContain('MediaID=12');
+      expect(manifest).toContain('MediaID=21');
+      expect(manifest).toContain('MediaID=31');
+
+      expect(manifest).toContain('Profile="natural-white-oak" (FrameID=131');
+      expect(manifest).toContain('Profile="american-black-walnut" (FrameID=204');
+      expect(manifest).toContain('Profile="matte-gallery-black" (FrameID=96');
+      expect(manifest).toContain('Profile="brushed-brass-float" (FrameID=458');
+      expect(manifest).toContain('Profile="warm-travertine-ash" (FrameID=312');
+      expect(manifest).toContain('Profile="unframed-canvas" (FrameID=0');
+
+      expect(manifest).toContain('MatID=2');
+      expect(manifest).toContain('archival-ivory');
+      expect(manifest).toContain('warm-museum-linen');
+      expect(manifest).toContain('charcoal-conservation');
+      expect(manifest).toContain('GlassID=1');
+      expect(manifest).toContain('GlassID=2');
+      expect(manifest).toContain('12x16');
+      expect(manifest).toContain('24x36');
+      expect(manifest).toContain('40x60');
+      expect(manifest).toContain('FINERWORKS ARCHIVAL CATALOG CURATION DIRECTIVE');
+      expect(manifest).toContain('NEVER be rendered with a paper matboard bevel');
+    });
+
+    it('composes FinerWorks Catalog Manifest Block in user-locked-finerworks mode with locked frame, mat, substrate, glazing, custom size, and non-paper mat disablement', () => {
+      const lockedPaperManifest = composeFinerWorksCatalogManifestBlock({
+        mode: 'user-locked-finerworks',
+        lockedMediaId: 42,
+        lockedFrameId: 'american-black-walnut',
+        lockedMatWidthId: '2.5in',
+        lockedMatColorId: 'warm-museum-linen',
+        lockedGlazingId: 'non-glare-museum-acrylic',
+        lockedSizeId: 'custom',
+        lockedCustomWidthIn: 28,
+        lockedCustomHeightIn: 40,
+      });
+
+      expect(lockedPaperManifest).toContain('MANDATORY USER-LOCKED FINERWORKS SPECIFICATION');
+      expect(lockedPaperManifest).toContain('MediaID 42');
+      expect(lockedPaperManifest).toContain('american-black-walnut');
+      expect(lockedPaperManifest).toContain('FrameID 204');
+      expect(lockedPaperManifest).toContain('2.5in');
+      expect(lockedPaperManifest).toContain('warm-museum-linen');
+      expect(lockedPaperManifest).toContain('GlassID 2');
+      expect(lockedPaperManifest).toContain('Custom 28" × 40" exact-inch proportion');
+
+      // Non-paper substrates (Canvas=12, Metal=21, Acrylic=31) must force matboard to disabled ("none")
+      for (const nonPaperMediaId of [12, 21, 31]) {
+        const nonPaperManifest = composeFinerWorksCatalogManifestBlock({
+          mode: 'user-locked-finerworks',
+          lockedMediaId: nonPaperMediaId,
+          lockedFrameId: 'matte-gallery-black',
+          lockedMatWidthId: '2.5in',
+          lockedMatColorId: 'archival-ivory',
+          lockedSizeId: '24x36',
+        });
+        expect(nonPaperManifest).toContain('Matboard is strictly DISABLED');
+        expect(nonPaperManifest).toContain('effective mat width = "none"');
+      }
+    });
+
+    it('embeds FinerWorks Catalog Manifest into curatorial pre-analysis, room reimagine, consolidated deliverables, and Agent #2 checker prompts', () => {
+      const lockedConfig = createDefaultAiPromptConfig({
+        engineId: 'astra',
+        finerworksConstraints: {
+          mode: 'user-locked-finerworks',
+          lockedMediaId: 41,
+          lockedFrameId: 'natural-white-oak',
+          lockedMatWidthId: '1.5in',
+          lockedMatColorId: 'archival-ivory',
+          lockedGlazingId: 'clear-acrylic',
+          lockedSizeId: '30x40',
+        },
+      });
+
+      const preAnalysisPrompt = composeCuratorialPreAnalysisPrompt(lockedConfig, 3);
+      const reimaginePrompt = composeRoomReimaginePrompt(lockedConfig, 0);
+      const consolidatedPrompt = composeConsolidatedDeliverablesPrompt(lockedConfig);
+      const optionsCheckPrompt = composeFinerWorksOptionsCheckPrompt(lockedConfig, 0);
+      const fullCheckerPrompt = buildFinerWorksOptionsCheckPrompt(
+        lockedConfig,
+        {
+          detectedFrameId: 'natural-white-oak',
+          detectedMatWidthId: '1.5in',
+          detectedMatColorId: 'archival-ivory',
+          cropBox: { ymin: 160, xmin: 310, ymax: 560, xmax: 690 },
+          mediaId: 41,
+          glazingId: 'clear-acrylic',
+          printSizeId: '30x40',
+        },
+        0
+      );
+
+      for (const promptText of [
+        preAnalysisPrompt,
+        reimaginePrompt,
+        consolidatedPrompt,
+        optionsCheckPrompt,
+        fullCheckerPrompt,
+      ]) {
+        expect(promptText).toContain('FINERWORKS ARCHIVAL PRINT & FRAMING CATALOG MANIFEST');
+        expect(promptText).toContain('MANDATORY USER-LOCKED FINERWORKS SPECIFICATION');
+        expect(promptText).toContain('natural-white-oak');
+      }
+
+      expect(fullCheckerPrompt).toContain('Separate AI Checker Agent #2');
+      expect(fullCheckerPrompt).toContain('CANDIDATE DETECTED ATTRIBUTES FOR VARIATION #1');
+      expect(fullCheckerPrompt).toContain('Candidate Frame Profile ID: "natural-white-oak"');
+      expect(fullCheckerPrompt).toContain('"frame_option_valid": boolean');
+    });
+
+    it('runs Separate AI Checker Agent #2 (verifyFinerWorksOptionsComplianceWithAi) with multimodal vision + deterministic SKU validation', async () => {
+      let capturedVisionBody: Record<string, unknown> = {};
+
+      globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        capturedVisionBody = init?.body
+          ? (JSON.parse(init.body as string) as Record<string, unknown>)
+          : {};
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    frame_option_valid: true,
+                    matting_and_glazing_valid: true,
+                    sizing_and_aspect_ratio_valid: true,
+                    substrate_surface_authentic: true,
+                    detected_frame_id: 'natural-white-oak',
+                    detected_mat_width_id: '2.5in',
+                    detected_mat_color_id: 'archival-ivory',
+                    detected_media_id: 41,
+                    discrepancies_found: [],
+                    correction_instructions: '',
+                  }),
+                },
+              },
+            ],
+          }),
+        } as Response;
+      });
+
+      const config = createDefaultAiPromptConfig({
+        engineId: 'astra',
+        finerworksConstraints: {
+          mode: 'curator-selects-finerworks',
+        },
+      });
+
+      const verification = await verifyFinerWorksOptionsComplianceWithAi(
+        'data:image/png;base64,REIMAGINED_ROOM_IMG',
+        'data:image/png;base64,CROPPED_ARTWORK_IMG',
+        config,
+        {
+          detectedFrameId: 'natural-white-oak',
+          detectedMatWidthId: '2.5in',
+          detectedMatColorId: 'archival-ivory',
+          cropBox: { ymin: 160, xmin: 310, ymax: 560, xmax: 690 },
+          mediaId: 41,
+          glazingId: 'clear-acrylic',
+          printSizeId: '24x36',
+          skipNetworkInJsdom: false,
+        },
+        0,
+        1
+      );
+
+      expect(capturedVisionBody.model).toBe('openai/gpt-6-astra');
+      expect(capturedVisionBody.response_format).toEqual({ type: 'json_object' });
+      const msgContent = (
+        capturedVisionBody.messages as Array<{
+          content: Array<{ type: string; image_url?: { url: string } }>;
+        }>
+      )[0].content;
+      const imageParts = msgContent.filter((p) => p.type === 'image_url');
+      expect(imageParts).toHaveLength(2);
+      expect(imageParts[0].image_url?.url).toBe('data:image/png;base64,REIMAGINED_ROOM_IMG');
+      expect(imageParts[1].image_url?.url).toBe('data:image/png;base64,CROPPED_ARTWORK_IMG');
+
+      expect(verification.passed).toBe(true);
+      expect(verification.frameOptionValid).toBe(true);
+      expect(verification.mattingAndGlazingValid).toBe(true);
+      expect(verification.sizingAndAspectRatioValid).toBe(true);
+      expect(verification.substrateSurfaceAuthentic).toBe(true);
+      expect(verification.matchedFinerWorksProductCode).toBe('5M41M9S24X36F131S29X41J2S24X36G1');
+      expect(verification.matchedFrameProfileId).toBe('natural-white-oak');
+      expect(verification.matchedMediaId).toBe(41);
+      expect(verification.matchedSizeLabel).toBe('24" × 36"');
+      expect(verification.discrepanciesFound).toHaveLength(0);
+      expect(verification.attemptsUsed).toBe(1);
+    });
+
+    it('detects user-locked frame mismatches and mat/substrate physical incompatibilities in Agent #2', async () => {
+      // 1. User-locked frame mismatch: locked 'american-black-walnut' vs detected 'matte-gallery-black'
+      const lockedWalnutConfig = createDefaultAiPromptConfig({
+        engineId: 'astra',
+        finerworksConstraints: {
+          mode: 'user-locked-finerworks',
+          lockedFrameId: 'american-black-walnut',
+          lockedMatWidthId: '2.5in',
+          lockedMatColorId: 'archival-ivory',
+          lockedMediaId: 42,
+          lockedGlazingId: 'clear-acrylic',
+          lockedSizeId: '24x36',
+        },
+      });
+
+      const frameMismatchResult = await verifyFinerWorksOptionsComplianceWithAi(
+        'data:image/png;base64,REIMAGINED_ROOM',
+        'data:image/png;base64,CROPPED_ART',
+        lockedWalnutConfig,
+        {
+          detectedFrameId: 'matte-gallery-black',
+          detectedMatWidthId: '2.5in',
+          detectedMatColorId: 'archival-ivory',
+          cropBox: { ymin: 160, xmin: 310, ymax: 560, xmax: 690 },
+          mediaId: 42,
+          glazingId: 'clear-acrylic',
+          printSizeId: '24x36',
+          skipNetworkInJsdom: true,
+        },
+        0,
+        1
+      );
+
+      expect(frameMismatchResult.passed).toBe(false);
+      expect(frameMismatchResult.frameOptionValid).toBe(false);
+      expect(frameMismatchResult.discrepanciesFound.length).toBeGreaterThan(0);
+      expect(frameMismatchResult.correctionInstructions).toBeDefined();
+      expect(frameMismatchResult.correctionInstructions).toContain('american-black-walnut');
+
+      // 2. Matting on Stretched Canvas (MediaID 12) -> physical incompatibility caught & SKU normalized
+      const curatorConfig = createDefaultAiPromptConfig({
+        engineId: 'astra',
+        finerworksConstraints: {
+          mode: 'curator-selects-finerworks',
+        },
+      });
+
+      const canvasWithMatResult = await verifyFinerWorksOptionsComplianceWithAi(
+        'data:image/png;base64,REIMAGINED_ROOM',
+        'data:image/png;base64,CROPPED_ART',
+        curatorConfig,
+        {
+          detectedFrameId: 'matte-gallery-black',
+          detectedMatWidthId: '2.5in',
+          detectedMatColorId: 'archival-ivory',
+          cropBox: { ymin: 160, xmin: 310, ymax: 560, xmax: 690 },
+          mediaId: 12,
+          printSizeId: '24x36',
+          skipNetworkInJsdom: true,
+        },
+        0,
+        1
+      );
+
+      expect(canvasWithMatResult.passed).toBe(false);
+      expect(canvasWithMatResult.mattingAndGlazingValid).toBe(false);
+      expect(canvasWithMatResult.discrepanciesFound.some((d) => d.includes('Stretched Canvas'))).toBe(
+        true
+      );
+      // Normalized SKU strips invalid J (mat) and G (glazing) segments
+      expect(canvasWithMatResult.matchedFinerWorksProductCode).toBe('1M12M15S24X36F96S24X36');
+
+      // 3. Matting on Brushed Brass Float frame ('brushed-brass-float') -> incompatibility caught
+      const floatFrameWithMatResult = await verifyFinerWorksOptionsComplianceWithAi(
+        'data:image/png;base64,REIMAGINED_ROOM',
+        'data:image/png;base64,CROPPED_ART',
+        curatorConfig,
+        {
+          detectedFrameId: 'brushed-brass-float',
+          detectedMatWidthId: '2.5in',
+          detectedMatColorId: 'archival-ivory',
+          cropBox: { ymin: 160, xmin: 310, ymax: 560, xmax: 690 },
+          mediaId: 21,
+          printSizeId: '24x36',
+          skipNetworkInJsdom: true,
+        },
+        0,
+        1
+      );
+
+      expect(floatFrameWithMatResult.passed).toBe(false);
+      expect(floatFrameWithMatResult.mattingAndGlazingValid).toBe(false);
+      expect(floatFrameWithMatResult.matchedFinerWorksProductCode).toBe('2M21M16S24X36F458S25X37');
+    });
+
+    it('gracefully falls back to deterministic FinerWorks verification when fetch rejects in Agent #2', async () => {
+      globalThis.fetch = vi.fn(async () => {
+        throw new Error('Network offline during Agent #2 check');
+      });
+
+      const config = createDefaultAiPromptConfig({ engineId: 'astra' });
+      const result = await verifyFinerWorksOptionsComplianceWithAi(
+        'data:image/png;base64,REIMAGINED_ROOM',
+        'data:image/png;base64,CROPPED_ART',
+        config,
+        {
+          detectedFrameId: 'natural-white-oak',
+          detectedMatWidthId: '2.5in',
+          detectedMatColorId: 'archival-ivory',
+          cropBox: { ymin: 160, xmin: 310, ymax: 560, xmax: 690 },
+          mediaId: 42,
+          glazingId: 'clear-acrylic',
+          printSizeId: '24x36',
+          skipNetworkInJsdom: false,
+        }
+      );
+
+      expect(result.passed).toBe(true);
+      expect(result.matchedFinerWorksProductCode).toBe('5M42M9S24X36F131S29X41J2S24X36G1');
+    });
+
+    it('orchestrates BOTH Agent #1 (Room Preservation) and Agent #2 (FinerWorks Compliance) across reimagineRoomWithAi and reimagineRoomBatchWithAi, including user-locked custom sizing and Attempt 2 corrective pass', async () => {
+      // Part 1: User-locked FinerWorks custom 28x40 size in offline/JSDOM mode -> passes on Attempt 1
+      globalThis.fetch = vi.fn(async () => {
+        throw new Error('Offline test synthesis');
+      });
+
+      const lockedCustomConfig = createDefaultAiPromptConfig({
+        engineId: 'astra',
+        finerworksConstraints: {
+          mode: 'user-locked-finerworks',
+          lockedMediaId: 42,
+          lockedFrameId: 'american-black-walnut',
+          lockedMatWidthId: '2.5in',
+          lockedMatColorId: 'warm-museum-linen',
+          lockedGlazingId: 'non-glare-museum-acrylic',
+          lockedSizeId: 'custom',
+          lockedCustomWidthIn: 28,
+          lockedCustomHeightIn: 40,
+        },
+      });
+
+      const batchVariations = await reimagineRoomBatchWithAi({
+        roomImageDataUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+        config: lockedCustomConfig,
+        optionCount: 2,
+      });
+
+      expect(batchVariations).toHaveLength(2);
+      for (const v of batchVariations) {
+        expect(v.preservationVerification).toBeDefined();
+        expect(v.preservationVerification?.passed).toBe(true);
+        expect(v.finerworksVerification).toBeDefined();
+        expect(v.finerworksVerification?.passed).toBe(true);
+        expect(v.detectedFrameId).toBe('american-black-walnut');
+        expect(v.detectedMatWidthId).toBe('2.5in');
+        expect(v.detectedMatColorId).toBe('warm-museum-linen');
+        expect(v.finerworksMediaId).toBe(42);
+        expect(v.finerworksGlazingId).toBe('non-glare-museum-acrylic');
+        expect(v.customPrintWidthIn).toBe(28);
+        expect(v.customPrintHeightIn).toBe(40);
+        expect(v.finerworksProductCode).toBe('5M42M9S28X40F204S33X45J3S28X40G2');
+        expect(v.viewpoints?.[0].finerworksVerification?.passed).toBe(true);
+        expect(v.viewpoints?.[0].finerworksProductCode).toBe(
+          '5M42M9S28X40F204S33X45J3S28X40G2'
+        );
+      }
+
+      // Part 2: Attempt 1 -> Attempt 2 corrective pass when vision check returns contradicting frame ID
+      let callCount = 0;
+      globalThis.fetch = vi.fn(async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              choices: [
+                {
+                  message: {
+                    images: [{ image_url: { url: 'data:image/png;base64,REIMAGINED_ROOM_V1' } }],
+                  },
+                },
+              ],
+            }),
+          } as Response;
+        }
+        if (callCount === 2) {
+          // Agent #1 Vision Judge returns detected_frame_id: 'matte-gallery-black' (contradicts locked 'american-black-walnut')
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      furniture_preserved: true,
+                      room_dimensions_preserved: true,
+                      only_difference_is_wall_art: true,
+                      discrepancies_found: '',
+                      correction_instructions: '',
+                      room_style: 'Warm Collector Salon',
+                      artwork_bbox_normalized: [180, 320, 540, 680],
+                      artwork_title: 'Walnut Locked Study',
+                      artwork_description: 'Impasto study',
+                      detected_frame_id: 'matte-gallery-black',
+                      detected_mat_width_id: 'none',
+                      detected_mat_color_id: 'archival-ivory',
+                    }),
+                  },
+                },
+              ],
+            }),
+          } as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  images: [{ image_url: { url: 'data:image/png;base64,PRINT_MASTER_V1' } }],
+                },
+              },
+            ],
+          }),
+        } as Response;
+      });
+
+      const correctedVariation = await reimagineRoomWithAi({
+        roomImageDataUrl: 'data:image/png;base64,ORIGINAL_ROOM',
+        config: lockedCustomConfig,
+        variationIndex: 0,
+      });
+
+      expect(correctedVariation.preservationVerification?.passed).toBe(true);
+      expect(correctedVariation.finerworksVerification).toBeDefined();
+      expect(correctedVariation.finerworksVerification?.passed).toBe(true);
+      expect(correctedVariation.finerworksVerification?.attemptsUsed).toBe(2);
+      expect(correctedVariation.detectedFrameId).toBe('american-black-walnut');
+      expect(correctedVariation.detectedMatWidthId).toBe('2.5in');
+      expect(correctedVariation.detectedMatColorId).toBe('warm-museum-linen');
+      expect(correctedVariation.finerworksProductCode).toBe(
+        '5M42M9S28X40F204S33X45J3S28X40G2'
+      );
+    });
+
+    it('generates all 3 distinct Art Collections in a SINGLE OpenRouter AI call via reimagineRoomBatchWithAi and composeConsolidatedDeliverablesPrompt', async () => {
+      const promptWithRef = composeConsolidatedDeliverablesPrompt(
+        createDefaultAiPromptConfig({ engineId: 'astra' }),
+        {
+          hasFrameReferenceImage: true,
+          referenceFrameTitle: 'Natural White Oak (SKU 42117, 1.25" width)',
+        }
+      );
+      expect(promptWithRef).toContain('SINGLE-CALL 3-COLLECTION GENERATION MANDATE');
+      expect(promptWithRef).toContain('Art Collection 1');
+      expect(promptWithRef).toContain('Art Collection 2');
+      expect(promptWithRef).toContain('Art Collection 3');
+      expect(promptWithRef).toContain('SINGLE-FRAME-ONLY RULE');
+      expect(promptWithRef).toContain(
+        'CATALOGUE FRAME MOULDING REFERENCE IMAGE PROVIDED (Image 2)'
+      );
+      expect(promptWithRef).toContain('Natural White Oak (SKU 42117, 1.25" width)');
+
+      let openRouterCallCount = 0;
+      const capturedBodies: Array<Record<string, unknown>> = [];
+
+      globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        openRouterCallCount += 1;
+        if (init?.body) {
+          capturedBodies.push(JSON.parse(init.body as string) as Record<string, unknown>);
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  images: [
+                    {
+                      image_url: {
+                        url: 'data:image/png;base64,CONSOLIDATED_3X3_GRID_SHEET',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+        } as Response;
+      });
+
+      const readyIndices: number[] = [];
+      const batch = await reimagineRoomBatchWithAi({
+        roomImageDataUrl: 'data:image/png;base64,ORIGINAL_ROOM_SINGLE_CALL',
+        config: createDefaultAiPromptConfig({ engineId: 'astra' }),
+        optionCount: 3,
+        onVariationReady: (_v, idx) => readyIndices.push(idx),
+      });
+
+      // Exactly 1 single AI generation call made for all 3 art collections
+      expect(openRouterCallCount).toBe(1);
+      expect(capturedBodies).toHaveLength(1);
+      expect(capturedBodies[0].modalities).toEqual(['image', 'text']);
+      expect(batch).toHaveLength(3);
+      expect(readyIndices).toEqual([0, 1, 2]);
+
+      // All 3 collections have distinct curatorial titles and option labels
+      expect(batch[0].artworkTitle).not.toBe(batch[1].artworkTitle);
+      expect(batch[1].artworkTitle).not.toBe(batch[2].artworkTitle);
+      expect(batch[0].curatorialReasoning?.optionLabel).toContain('Option 1');
+      expect(batch[1].curatorialReasoning?.optionLabel).toContain('Option 2');
+      expect(batch[2].curatorialReasoning?.optionLabel).toContain('Option 3');
+    });
+
+    it('enforces ARCHIVAL 300-DPI ZERO-GRAIN QUALITY CONTROL MANDATE across prompt composers and assessAndEnhanceImageQualityFor300Dpi for large 36"×48" and 40"×60" editions', async () => {
+      const config = createDefaultAiPromptConfig({ engineId: 'astra' });
+      const roomPrompt = composeRoomReimaginePrompt(config, 0);
+      const consolidatedPrompt = composeConsolidatedDeliverablesPrompt(config);
+      const printMasterPrompt = composeIdenticalPrintMasterPrompt({
+        artworkTitle: 'Warm Travertine Study',
+        artworkDescription: 'Museum-grade mineral pigment study',
+      });
+
+      for (const prompt of [roomPrompt, consolidatedPrompt, printMasterPrompt]) {
+        expect(prompt).toContain('ARCHIVAL 300-DPI ZERO-GRAIN QUALITY CONTROL MANDATE');
+        expect(prompt).toContain('40"×60"');
+        expect(prompt).toMatch(/12,000\s*×\s*18,000\s*px/i);
+        expect(prompt).toContain('36"×48"');
+        expect(prompt).toMatch(/10,800\s*×\s*14,400\s*px/i);
+        expect(prompt).toMatch(/zero digital sensor noise|zero-grain, noise-free/i);
+      }
+
+      const sampleDataUrl = 'data:image/png;base64,ARCHIVAL_MASTER_SAMPLE';
+      const enhancedMaster = await assessAndEnhanceImageQualityFor300Dpi(sampleDataUrl, {
+        role: 'print-master',
+        targetMinDimensionPx: 2400,
+      });
+      expect(enhancedMaster.dataUrl.startsWith('data:image/')).toBe(true);
+      expect(enhancedMaster.passes300DpiQualityCheck).toBe(true);
+      expect(enhancedMaster.wasDenoisedAndSharpened).toBe(true);
+      expect(enhancedMaster.widthPx).toBe(2400);
+      expect(enhancedMaster.maxSupportedSizeLabel).toContain('40" × 60"');
+
+      const enhancedRoom = await assessAndEnhanceImageQualityFor300Dpi(sampleDataUrl, {
+        role: 'room-stage',
+        targetMinDimensionPx: 2048,
+      });
+      expect(enhancedRoom.dataUrl.startsWith('data:image/')).toBe(true);
+      expect(enhancedRoom.passes300DpiQualityCheck).toBe(true);
+    });
+  });
 });
+
+

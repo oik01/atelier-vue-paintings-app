@@ -30,13 +30,25 @@ export type PanelLayoutMode = 'single' | 'diptych' | 'triptych';
 
 export type OrientationMode = 'portrait' | 'landscape' | 'square';
 
-export type FrameProfileId =
+export type CanonicalFrameProfileId =
   | 'unframed-canvas'
   | 'natural-white-oak'
   | 'american-black-walnut'
   | 'matte-gallery-black'
   | 'brushed-brass-float'
   | 'warm-travertine-ash';
+
+export type FrameProfileId = CanonicalFrameProfileId | (string & {});
+
+export type FrameMouldingProfileStyle =
+  | 'flat-contemporary'
+  | 'sloped-bevel'
+  | 'ornate-beaded'
+  | 'rustic-barnwood'
+  | 'floater-l-channel'
+  | 'metallic-brushed'
+  | 'italian-crown'
+  | 'unframed';
 
 export type MatWidthId = 'none' | '1.5in' | '2.5in' | '3.5in';
 
@@ -157,6 +169,17 @@ export interface FrameProfileSpec {
   highlightHex: string;
   isFloatFrame: boolean;
   priceMultiplier: number;
+  sku?: string;
+  manufacturerId?: string;
+  collectionId?: number;
+  collectionName?: string;
+  collectionSlug?: string;
+  categoryGroup?: string;
+  cornerImageUrl?: string;
+  remoteCornerImageUrl?: string;
+  profileImageUrl?: string;
+  collectionImageUrl?: string;
+  mouldingProfileStyle?: FrameMouldingProfileStyle;
 }
 
 export interface WallPlacementState {
@@ -334,6 +357,10 @@ export const FRAME_PROFILES: Record<FrameProfileId, FrameProfileSpec> = {
     highlightHex: '#F5F2EB',
     isFloatFrame: false,
     priceMultiplier: 1.0,
+    sku: 'F0',
+    collectionName: 'Unframed Gallery Standard',
+    categoryGroup: 'Contemporary & Modern',
+    mouldingProfileStyle: 'unframed',
   },
   'natural-white-oak': {
     id: 'natural-white-oak',
@@ -346,6 +373,12 @@ export const FRAME_PROFILES: Record<FrameProfileId, FrameProfileSpec> = {
     highlightHex: '#DFC59E',
     isFloatFrame: false,
     priceMultiplier: 1.38,
+    sku: 'F131',
+    manufacturerId: 'W2112',
+    collectionName: 'Nature Wood',
+    categoryGroup: 'Natural Woods & Hardwoods',
+    cornerImageUrl: '/frames/w2112_3d.jpg',
+    mouldingProfileStyle: 'flat-contemporary',
   },
   'american-black-walnut': {
     id: 'american-black-walnut',
@@ -358,6 +391,12 @@ export const FRAME_PROFILES: Record<FrameProfileId, FrameProfileSpec> = {
     highlightHex: '#694E38',
     isFloatFrame: false,
     priceMultiplier: 1.48,
+    sku: 'F204',
+    manufacturerId: 'W3021',
+    collectionName: 'Nature Wood',
+    categoryGroup: 'Natural Woods & Hardwoods',
+    cornerImageUrl: '/frames/w3021_3d.jpg',
+    mouldingProfileStyle: 'flat-contemporary',
   },
   'matte-gallery-black': {
     id: 'matte-gallery-black',
@@ -370,6 +409,12 @@ export const FRAME_PROFILES: Record<FrameProfileId, FrameProfileSpec> = {
     highlightHex: '#33312F',
     isFloatFrame: false,
     priceMultiplier: 1.32,
+    sku: 'F96',
+    manufacturerId: '201-421R',
+    collectionName: 'Gallery Contemporary',
+    categoryGroup: 'Contemporary & Modern',
+    cornerImageUrl: '/frames/201-421r_3d.jpg',
+    mouldingProfileStyle: 'flat-contemporary',
   },
   'brushed-brass-float': {
     id: 'brushed-brass-float',
@@ -382,6 +427,12 @@ export const FRAME_PROFILES: Record<FrameProfileId, FrameProfileSpec> = {
     highlightHex: '#DEC284',
     isFloatFrame: true,
     priceMultiplier: 1.62,
+    sku: 'F458',
+    manufacturerId: 'P2007',
+    collectionName: 'Modern Float',
+    categoryGroup: 'Canvas Floater Frames',
+    cornerImageUrl: '/frames/p2007_3d.jpg',
+    mouldingProfileStyle: 'floater-l-channel',
   },
   'warm-travertine-ash': {
     id: 'warm-travertine-ash',
@@ -394,8 +445,14 @@ export const FRAME_PROFILES: Record<FrameProfileId, FrameProfileSpec> = {
     highlightHex: '#F8F6F1',
     isFloatFrame: false,
     priceMultiplier: 1.35,
+    sku: 'F312',
+    manufacturerId: '201-421RW',
+    collectionName: 'Gallery Contemporary',
+    categoryGroup: 'Contemporary & Modern',
+    cornerImageUrl: '/frames/201-421rw_3d.jpg',
+    mouldingProfileStyle: 'flat-contemporary',
   },
-};
+} as Record<FrameProfileId, FrameProfileSpec>;
 
 export const PRINT_PARTNERS: Record<PrintPartnerId, PrintPartnerSpec> = {
   prodigi: {
@@ -511,6 +568,12 @@ export interface ReimaginedRoomViewpoint {
   frameMatMatchSummary?: string;
   /** Indicates this viewpoint corresponds to the level head-on photo used for sizing */
   isHeadOnSizingPhoto?: boolean;
+  finerworksVerification?: FinerWorksOptionsVerification;
+  finerworksProductCode?: string;
+  finerworksMediaId?: number;
+  finerworksGlazingId?: FinerWorksGlazingId;
+  customPrintWidthIn?: number;
+  customPrintHeightIn?: number;
 }
 
 export type AtelierWorkflowPageId =
@@ -613,6 +676,7 @@ export interface AiPromptConfiguration {
   additionalUserDetails?: string; // User-typed additional details (internal prompt stays hidden)
   editablePromptText: string; // Internal compiled prompt (not shown as raw prompt in UI)
   isPromptManuallyEdited: boolean;
+  finerworksConstraints?: FinerWorksPromptConstraintConfig;
 }
 
 export interface CuratorialSpaceAnalysis {
@@ -658,6 +722,12 @@ export interface ReimaginedRoomVariation {
   detectedMatWidthId?: MatWidthId;
   detectedMatColorId?: MatColorId;
   frameMatMatchSummary?: string;
+  finerworksVerification?: FinerWorksOptionsVerification;
+  finerworksProductCode?: string;
+  finerworksMediaId?: number;
+  finerworksGlazingId?: FinerWorksGlazingId;
+  customPrintWidthIn?: number;
+  customPrintHeightIn?: number;
 }
 
 export type AiGenerationStage =
@@ -727,3 +797,323 @@ export const AI_ENGINE_SPECS: Record<
       'Uses DeepSeek V4.1 multimodal vision for room curatorial direction & preservation paired with fast studio image synthesis.',
   },
 };
+
+// ============================================================================
+// FINERWORKS API V3, AUTO-SYNC CATALOG, DUAL AI CHECKER & WHITE-LABEL CONTRACTS
+// ============================================================================
+
+export type FinerWorksProductTypeId = 5 | 1 | 2 | 3; // 5=Fine Art Paper, 1=Canvas, 2=Metal, 3=Acrylic
+
+export type FinerWorksGlazingId = 'none' | 'clear-acrylic' | 'non-glare-museum-acrylic';
+
+export type FinerWorksStandardSizeId =
+  | '8x10'
+  | '11x14'
+  | '12x16'
+  | '16x20'
+  | '18x24'
+  | '20x30'
+  | '24x36'
+  | '30x40'
+  | '36x48'
+  | '40x60'
+  | 'custom';
+
+export type WhiteLabelBrandId =
+  | 'atelier-koma'
+  | 'galerie-vauban'
+  | 'werkstatt-neue'
+  | 'stillwater-press'
+  | 'the-nocturne-archive';
+
+export interface FinerWorksMediaSpec {
+  mediaId: number; // FinerWorks MediaID (e.g. 6, 41, 42, 45, 48, 12, 14, 21, 22, 31)
+  productTypeId: FinerWorksProductTypeId;
+  substrateSlug: PrintSubstrateId | string;
+  name: string;
+  shortName: string;
+  description: string;
+  gsmOrThicknessLabel: string;
+  surfaceFinish:
+    | 'matte-rag'
+    | 'textured-etching'
+    | 'satin-canvas'
+    | 'metallic-canvas'
+    | 'gloss-metal'
+    | 'brushed-metal'
+    | 'face-mounted-acrylic';
+  defaultStyleId: number; // FinerWorks MountingID / StyleID (e.g. 9, 10, 15, 16, 25)
+  canFrame: boolean;
+  canMat: boolean;
+  canGlaze: boolean;
+  compatibleFrameClassIds: number[]; // 1=Standard Wood/Metal, 2=Deep Profile, 3=Floater Frame
+  minWidthIn: number;
+  minHeightIn: number;
+  maxWidthIn: number;
+  maxHeightIn: number;
+  bleedInches: number;
+  baseRatePerSqInchUsd: number;
+  minimumUnitPriceUsd: number;
+}
+
+export interface FinerWorksFrameCollectionSpec {
+  collectionId: number;
+  slug: string;
+  name: string;
+  title: string;
+  description: string;
+  categoryGroup: string;
+  frameCount: number;
+  collectionImageUrl: string;
+  localCollectionImagePath: string;
+}
+
+export interface FinerWorksFrameMouldingSpec {
+  finerworksFrameId: number; // FinerWorks FrameID (0=Unframed, or 1..596 across all 231 frames)
+  profileId: FrameProfileId;
+  collectionId: number;
+  collectionName: string;
+  collectionSlug?: string;
+  collectionDescription?: string;
+  categoryGroup?: string;
+  sku?: string;
+  manufacturerId?: string;
+  name: string;
+  shortLabel: string;
+  materialDescription: string;
+  composite: 'Solid Hardwood' | 'Anodized Aluminum' | 'Gessoed Ash' | 'Stretcher Bar' | (string & {});
+  colorLabel: string;
+  thicknessInches: number; // Face width of moulding in inches
+  depthInches: number; // Wall projection depth in inches
+  rabbetInches: number; // Inner recess lip overlap in inches (typically 0.25" or 0.375")
+  lipInches: number;
+  floatOffsetInches: number; // Shadow gap for canvas/metal floater frames (e.g. 0.35")
+  minWidthIn: number;
+  minHeightIn: number;
+  maxWidthIn: number;
+  maxHeightIn: number;
+  allowGlazing: boolean;
+  allowMatting: boolean;
+  isFloatFrame: boolean;
+  frameClassId: number; // 1=Standard, 2=Gallery Deep, 3=Floater, 0=Unframed
+  startingPriceUsd: number;
+  ratePerLinearInchUsd: number;
+  primaryHex: string;
+  secondaryHex: string;
+  highlightHex: string;
+  cornerImageUrl?: string; // Local catalogue corner sample image (/frames/<basename>_3d.jpg)
+  remoteCornerImageUrl?: string; // Remote FinerWorks 3D corner image URL
+  profileImageUrl?: string;
+  flatCornerImageUrl?: string;
+  studio360ImageUrl?: string;
+  collectionImageUrl?: string;
+  mouldingProfileStyle?: FrameMouldingProfileStyle;
+}
+
+export interface FinerWorksMatBoardSpec {
+  finerworksMatId: number; // 0=None, 1=Pure White, 2=Archival Ivory, 3=Warm Museum Linen, 4=Charcoal Conservation
+  matColorId: MatColorId;
+  name: string;
+  hex: string;
+  coreColor: string;
+  plyThickness: number; // 4-Ply
+  composite: string; // "4-Ply Acid-Free Archival Cotton Rag"
+  minWidthIn: number;
+  minHeightIn: number;
+  maxWidthIn: number;
+  maxHeightIn: number;
+  startingPriceUsd: number;
+  ratePerOuterSqInchUsd: number;
+}
+
+export interface FinerWorksGlazingSpec {
+  finerworksGlassId: number; // 0=None, 1=Premium Clear Acrylic, 2=Non-Glare Museum Matte Acrylic
+  glazingId: FinerWorksGlazingId;
+  name: string;
+  shortLabel: string;
+  description: string;
+  uvFilteringPercent: number;
+  startingPriceUsd: number;
+  ratePerSqInchUsd: number;
+}
+
+export interface FinerWorksSizeOptionSpec {
+  id: FinerWorksStandardSizeId;
+  legacySizeId: PrintSizeId; // Maps cleanly to PrintSizeId for backward compatibility
+  widthInches: number;
+  heightInches: number;
+  labelInches: string;
+  labelCm: string;
+  aspectRatioLabel: string;
+  optimalPrintWidthPx: number; // @ 300 PPI
+  optimalPrintHeightPx: number; // @ 300 PPI
+  scaleCategory: string;
+}
+
+export interface FinerWorksDynamicProductConfig {
+  productTypeId: FinerWorksProductTypeId;
+  mediaId: number;
+  styleId: number;
+  printWidthIn: number;
+  printHeightIn: number;
+  frameProfileId: FrameProfileId;
+  finerworksFrameId: number;
+  matWidthId: MatWidthId;
+  matBorderInches: number;
+  matColorId: MatColorId;
+  finerworksMatId: number;
+  glazingId: FinerWorksGlazingId;
+  finerworksGlassId: number;
+  quantity?: number;
+  colorCorrect?: boolean;
+}
+
+export interface FinerWorksBuiltProductSpec {
+  productCode: string; // e.g., "5M41M9S18X24F131S23X29J2S18X24G1"
+  valid: boolean;
+  validationNotes: string[];
+  config: FinerWorksDynamicProductConfig;
+  physicalDimensions: {
+    printWidthIn: number;
+    printHeightIn: number;
+    matWindowWidthIn: number;
+    matWindowHeightIn: number;
+    matOuterWidthIn: number;
+    matOuterHeightIn: number;
+    frameInteriorWidthIn: number;
+    frameInteriorHeightIn: number;
+    frameOuterWidthIn: number;
+    frameOuterHeightIn: number;
+    wallDepthIn: number;
+    estimatedWeightOz: number;
+    isRigidShipment: boolean;
+    optimalWidthPx300Ppi: number;
+    optimalHeightPx300Ppi: number;
+  };
+  pricing: {
+    productQty: number;
+    basePrintPriceUsd: number; // FinerWorks product_price
+    addFramePriceUsd: number; // FinerWorks add_frame_price
+    addMat1PriceUsd: number; // FinerWorks add_mat_1_price
+    addGlazingPriceUsd: number; // FinerWorks add_glazing_price
+    volumeDiscountPercent: number;
+    wholesaleTotalUsd: number; // FinerWorks total_price
+    suggestedGeoRetailUsd: number; // FinerWorks geo_price
+  };
+}
+
+export interface FinerWorksCatalogSyncSnapshot {
+  syncVersion: string;
+  lastSyncedAt: number;
+  syncSource: 'finerworks-v3-live-api' | 'finerworks-v3-verified-catalog-engine';
+  apiConnected: boolean;
+  isTestMode: boolean;
+  mediaSpecs: FinerWorksMediaSpec[];
+  frameMouldings: FinerWorksFrameMouldingSpec[];
+  matBoards: FinerWorksMatBoardSpec[];
+  glazingOptions: FinerWorksGlazingSpec[];
+  sizeOptions: FinerWorksSizeOptionSpec[];
+  cachedPriceMatrix: Record<string, FinerWorksBuiltProductSpec['pricing']>;
+  totalOptionsSyncedCount: number;
+  autoRefreshIntervalMs: number;
+}
+
+export interface FinerWorksPromptConstraintConfig {
+  mode: 'curator-selects-finerworks' | 'user-locked-finerworks';
+  lockedMediaId?: number;
+  lockedSubstrateSlug?: PrintSubstrateId | string;
+  lockedFrameId?: FrameProfileId;
+  lockedMatWidthId?: MatWidthId;
+  lockedMatColorId?: MatColorId;
+  lockedGlazingId?: FinerWorksGlazingId;
+  lockedSizeId?: FinerWorksStandardSizeId;
+  lockedCustomWidthIn?: number;
+  lockedCustomHeightIn?: number;
+}
+
+/**
+ * Separate AI Checker Agent #2: FinerWorks Options & Framing Compliance Verification
+ * (Independent from RoomPreservationVerification which checks room & furniture dimensions)
+ */
+export interface FinerWorksOptionsVerification {
+  passed: boolean;
+  frameOptionValid: boolean;
+  mattingAndGlazingValid: boolean;
+  sizingAndAspectRatioValid: boolean;
+  substrateSurfaceAuthentic: boolean;
+  matchedFinerWorksProductCode: string;
+  matchedFrameProfileId: FrameProfileId;
+  matchedFinishesSummary: string;
+  matchedSizeLabel: string;
+  matchedMediaId: number;
+  verifierModelId: string;
+  verificationSummary: string;
+  discrepanciesFound: string[];
+  correctionInstructions?: string;
+  attemptsUsed: number;
+}
+
+export interface WhiteLabelBusinessInfo {
+  first_name: string;
+  last_name: string;
+  company_name: string;
+  address_1: string;
+  address_2: string;
+  city: string;
+  state_code: string;
+  zip_postal_code: string;
+  country_code: string;
+  phone: string;
+  email: string;
+  website: string;
+}
+
+export interface WhiteLabelBrandIdentitySpec {
+  id: WhiteLabelBrandId;
+  brandName: string;
+  tagline: string;
+  establishedYear: string;
+  originCity: string;
+  brandPersonaDescription: string;
+  isFlagshipDefault?: boolean;
+  logoSvgMarkup: string; // 600x180 SVG
+  logoDataUrl: string; // data:image/svg+xml;utf8,... for immediate <img src> and canvas 600x180 JPG export
+  businessInfo: WhiteLabelBusinessInfo;
+  packingSlipSpec: {
+    headerTitle: string;
+    collectorGreeting: string;
+    curatorialNoteTemplate: string;
+    unboxingCareInstructions: string[];
+    accentHex: string;
+    secondaryHex: string;
+    paperTintHex: string;
+  };
+  coaSpec: {
+    certificateTitle: string;
+    archivalGuaranteeStatement: string;
+    editionNamingFormat: string;
+    chiefCuratorName: string;
+    chiefCuratorTitle: string;
+    embossedSealLabel: string;
+  };
+}
+
+export interface FinerWorksShippingOptionQuote {
+  id: number;
+  shippingCode: string; // e.g. "14", "SD", "EC", "EX", "ON"
+  shippingClassCode: 'EC' | 'SD' | 'EX' | 'ON';
+  carrier: 'USPS' | 'UPS' | 'FedEx';
+  shippingMethod: string;
+  transitTime: string;
+  rateUsd: number;
+  calculatedTotal: {
+    orderPo: string;
+    orderSubtotalUsd: number;
+    orderShippingRateUsd: number;
+    orderDiscountUsd: number;
+    orderSalesTaxUsd: number;
+    orderSalesTaxRate: number;
+    orderGrandTotalUsd: number;
+  };
+}
+
