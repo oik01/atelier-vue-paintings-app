@@ -215,14 +215,14 @@ describe('V2 Subsystem 4 (checkout-and-download) — Independent Verification Su
       expect(evaluatedCombinations).toBe(3240);
     });
 
-    it('clamps studio markup percentage to [10%, 35%] and defaults undefined/NaN to 18%', () => {
-      expect(DEFAULT_STUDIO_MARKUP_PERCENT).toBe(18);
+    it('clamps studio markup percentage to [10%, 100%] and defaults undefined/NaN to 50%', () => {
+      expect(DEFAULT_STUDIO_MARKUP_PERCENT).toBe(50);
       expect(MIN_STUDIO_MARKUP_PERCENT).toBe(10);
-      expect(MAX_STUDIO_MARKUP_PERCENT).toBe(35);
+      expect(MAX_STUDIO_MARKUP_PERCENT).toBe(100);
 
-      expect(clampStudioMarkupPercent(undefined)).toBe(18);
-      expect(clampStudioMarkupPercent(Number.NaN)).toBe(18);
-      expect(clampStudioMarkupPercent(Number.POSITIVE_INFINITY)).toBe(18);
+      expect(clampStudioMarkupPercent(undefined)).toBe(50);
+      expect(clampStudioMarkupPercent(Number.NaN)).toBe(50);
+      expect(clampStudioMarkupPercent(Number.POSITIVE_INFINITY)).toBe(50);
       expect(clampStudioMarkupPercent(-5)).toBe(10);
       expect(clampStudioMarkupPercent(4)).toBe(10);
       expect(clampStudioMarkupPercent(10)).toBe(10);
@@ -230,7 +230,8 @@ describe('V2 Subsystem 4 (checkout-and-download) — Independent Verification Su
       expect(clampStudioMarkupPercent(18)).toBe(18);
       expect(clampStudioMarkupPercent(22)).toBe(22);
       expect(clampStudioMarkupPercent(35)).toBe(35);
-      expect(clampStudioMarkupPercent(65)).toBe(35);
+      expect(clampStudioMarkupPercent(50)).toBe(50);
+      expect(clampStudioMarkupPercent(150)).toBe(100);
     });
 
     it('compares all 3 partner quotes and maintains alias parity with calculatePrintPricing & compareAllPartnersPricing', () => {
@@ -454,7 +455,7 @@ describe('V2 Subsystem 4 (checkout-and-download) — Independent Verification Su
       const initial = loadAtelierV2State();
       expect(initial.version).toBe(2);
       expect(initial.preferredPartnerId).toBe('finerworks');
-      expect(initial.preferredMarkupPercent).toBe(18);
+      expect(initial.preferredMarkupPercent).toBe(50);
 
       const saveRes = saveAtelierV2State({
         preferredPartnerId: 'finerworks',
@@ -907,13 +908,15 @@ describe('V2 Subsystem 4 (checkout-and-download) — Independent Verification Su
       expect(completedOrders[0].status).toBe('dispatched-to-partner');
       expect(completedOrders[0].pricing.partnerId).toBe('finerworks');
 
-      // Verify Order Confirmation Receipt is rendered
+      // Verify Order Confirmation Receipt is rendered (with Atelier Vue as the sole visible seller)
       const receipt = container.querySelector(
         '[data-testid="order-confirmation-receipt"]'
       ) as HTMLElement;
       expect(receipt).not.toBeNull();
       expect(receipt.textContent).toContain('Clara Vance');
-      expect(receipt.textContent).toContain('FinerWorks Archival Lab');
+      expect(receipt.textContent).toContain('Atelier Vue');
+      expect(receipt.textContent).not.toContain('FinerWorks');
+      expect(receipt.textContent).not.toContain('Wholesale');
 
       // Click Download Order Manifest (.JSON)
       const downloadManifestBtn = container.querySelector(

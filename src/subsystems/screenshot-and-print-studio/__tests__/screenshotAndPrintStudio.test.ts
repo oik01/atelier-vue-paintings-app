@@ -1551,8 +1551,8 @@ describe('Subsystem 3: screenshot-and-print-studio (V2.2)', () => {
       expect(activeSkuCode).not.toBeNull();
       expect(activeSkuCode?.textContent).toContain('5M42M9S22X33');
       expect(livePricePill).not.toBeNull();
-      expect(livePricePill?.textContent).toContain('Wholesale:');
-      expect(livePricePill?.textContent).toContain('Suggested Retail:');
+      expect(livePricePill?.textContent).toContain('Edition Price:');
+      expect(livePricePill?.textContent).not.toContain('Wholesale:');
       expect(toggleSpecBtn).not.toBeNull();
       expect(
         container.querySelector('[data-testid="finerworks-spec-details-drawer"]')

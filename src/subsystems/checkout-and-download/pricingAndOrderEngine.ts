@@ -38,9 +38,9 @@ import {
 } from '../finerworks-catalog-sync';
 
 export const V2_STORAGE_KEY = 'atelier_vue_v2_state';
-export const DEFAULT_STUDIO_MARKUP_PERCENT = 18;
+export const DEFAULT_STUDIO_MARKUP_PERCENT = 50;
 export const MIN_STUDIO_MARKUP_PERCENT = 10;
-export const MAX_STUDIO_MARKUP_PERCENT = 35;
+export const MAX_STUDIO_MARKUP_PERCENT = 100;
 export const DIGITAL_MASTER_LICENSE_USD = 29.0;
 
 export interface PrintSubstrateSpec {

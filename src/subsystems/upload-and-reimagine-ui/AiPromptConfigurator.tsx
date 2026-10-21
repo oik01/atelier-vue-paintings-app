@@ -1393,7 +1393,7 @@ export const AiPromptConfigurator: React.FC<AiPromptConfiguratorProps> = ({
                           {selectedFrame.name}
                         </span>
                         <span className="rounded bg-[#1F1C18] px-1.5 py-0.5 font-mono text-[9px] font-semibold text-[#FAF6EE]">
-                          SKU {selectedFrame.sku || `FW-${selectedFrame.finerworksFrameId}`}
+                          SKU {selectedFrame.sku || `AV-${selectedFrame.finerworksFrameId}`}
                         </span>
                         {selectedFrame.collectionName && (
                           <span className="font-mono text-[10px] text-[#9E5A3C]">

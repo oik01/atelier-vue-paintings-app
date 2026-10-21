@@ -1260,7 +1260,7 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
                     3D Corner Sample
                   </span>
                   <span className="rounded bg-[#1F1C18] px-1.5 py-0.5 font-mono text-[9px] font-semibold text-[#FAF6EE]">
-                    SKU {finerWorksFrameSpec.sku || `FW-${finerWorksFrameSpec.finerworksFrameId}`}
+                    SKU {finerWorksFrameSpec.sku || `AV-${finerWorksFrameSpec.finerworksFrameId}`}
                   </span>
                 </div>
                 <div className="relative h-28 w-full overflow-hidden rounded-lg border border-[#DFD7C8] bg-[#EFE9DC]">
@@ -1673,7 +1673,7 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
               </label>
               <p className="text-[11px] text-[#655B50]">
                 Active: {sanitizeDisplayCopy(frameSpec.name, frameSpec.name)} · SKU{' '}
-                {finerWorksFrameSpec.sku || `FW-${finerWorksFrameSpec.finerworksFrameId}`} ·{' '}
+                {finerWorksFrameSpec.sku || `AV-${finerWorksFrameSpec.finerworksFrameId}`} ·{' '}
                 {sanitizeDisplayCopy(
                   finerWorksFrameSpec.collectionName || 'Curated Gallery Moulding',
                   'Curated Gallery Moulding'
@@ -1808,7 +1808,9 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
                   matColorId: activeMatColorId,
                   glazingId: effectiveGlazingId,
                 });
-                const framePriceDelta = frameOptionSpec.pricing.addFramePriceUsd;
+                const framePriceDelta =
+                  Math.round((frameOptionSpec.pricing.addFramePriceUsd * 1.5 + Number.EPSILON) * 100) /
+                  100;
 
                 return (
                   <button
@@ -1840,7 +1842,7 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
                               className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
                             />
                             <span className="absolute bottom-1 right-1 rounded bg-[#1F1C18]/85 px-1.5 py-0.5 font-mono text-[9px] font-semibold text-[#FAF6EE]">
-                              SKU {fwFrame.sku || `FW-${fwFrame.finerworksFrameId}`}
+                              SKU {fwFrame.sku || `AV-${fwFrame.finerworksFrameId}`}
                             </span>
                           </div>
                         )}
@@ -2041,7 +2043,10 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
                 matColorId: activeMatColorId,
                 glazingId: g.glazingId,
               });
-              const glazingPriceDelta = glazingOptionSpec.pricing.addGlazingPriceUsd;
+              const glazingPriceDelta =
+                Math.round(
+                  (glazingOptionSpec.pricing.addGlazingPriceUsd * 1.5 + Number.EPSILON) * 100
+                ) / 100;
 
               return (
                 <button
@@ -2101,9 +2106,7 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
                 data-testid="finerworks-live-price-pill"
                 className="rounded-lg border border-[#DFD7C8] bg-[#FAF6EE] px-2.5 py-1 font-mono text-xs font-medium text-[#1F1C18]"
               >
-                Wholesale: ${liveBuiltProductSpec.pricing.wholesaleTotalUsd.toFixed(2)} ·
-                Suggested Retail: $
-                {liveBuiltProductSpec.pricing.suggestedGeoRetailUsd.toFixed(2)}
+                Edition Price: ${liveBuiltProductSpec.pricing.suggestedGeoRetailUsd.toFixed(2)}
               </span>
             </div>
 
@@ -2129,19 +2132,36 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
                 </p>
                 <p>
                   Base Print ({activeMediaSpec.shortName}): $
-                  {liveBuiltProductSpec.pricing.basePrintPriceUsd.toFixed(2)}
+                  {(
+                    Math.round(
+                      (liveBuiltProductSpec.pricing.basePrintPriceUsd * 1.5 + Number.EPSILON) * 100
+                    ) / 100
+                  ).toFixed(2)}
                 </p>
                 <p>
                   Frame Moulding ({finerWorksFrameSpec.shortLabel}): +$
-                  {liveBuiltProductSpec.pricing.addFramePriceUsd.toFixed(2)}
+                  {(
+                    Math.round(
+                      (liveBuiltProductSpec.pricing.addFramePriceUsd * 1.5 + Number.EPSILON) * 100
+                    ) / 100
+                  ).toFixed(2)}
                 </p>
                 <p>
                   Conservation Matboard ({activeMatWidthId}): +$
-                  {liveBuiltProductSpec.pricing.addMat1PriceUsd.toFixed(2)}
+                  {(
+                    Math.round(
+                      (liveBuiltProductSpec.pricing.addMat1PriceUsd * 1.5 + Number.EPSILON) * 100
+                    ) / 100
+                  ).toFixed(2)}
                 </p>
                 <p>
                   Acrylic Glazing ({effectiveGlazingId}): +$
-                  {liveBuiltProductSpec.pricing.addGlazingPriceUsd.toFixed(2)}
+                  {(
+                    Math.round(
+                      (liveBuiltProductSpec.pricing.addGlazingPriceUsd * 1.5 + Number.EPSILON) *
+                        100
+                    ) / 100
+                  ).toFixed(2)}
                 </p>
               </div>
               <div className="space-y-1">

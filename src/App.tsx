@@ -1667,7 +1667,7 @@ export const App: React.FC<AppProps> = ({
                   type="button"
                   data-testid="open-brand-and-sync-modal-btn"
                   onClick={() => setIsBrandAndSyncModalOpen(true)}
-                  className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] px-2.5 py-1 text-[11px] sm:text-xs font-semibold text-[#1F1C18] transition-colors hover:border-[#2E4A3E] hover:text-[#2E4A3E] whitespace-nowrap"
+                  className="sr-only"
                 >
                   <span className="h-2 w-2 shrink-0 rounded-full bg-[#2E4A3E]" />
                   <span>Brand &amp; Archival Studio</span>
@@ -2056,7 +2056,6 @@ export const App: React.FC<AppProps> = ({
                 customPrintWidthIn={customPrintWidthIn}
                 customPrintHeightIn={customPrintHeightIn}
                 includeBleed={includeBleed}
-                estimatedRetailPriceUsd={estimatedQuote.physicalRetailTotalUsd}
                 scaleRecommendation={effectiveGalleryScaleRecommendation}
                 onOpenCaliperSizingTool={() => setIsCaliperSizingModalOpen(true)}
                 onCropBoxChange={handleCropBoxChange}

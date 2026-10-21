@@ -286,7 +286,7 @@ describe('Forensic Audit Remediation Verification Suite (F-01 through F-22)', ()
       '[data-testid="order-confirmation-receipt"]'
     ) as HTMLElement;
     expect(receipt).not.toBeNull();
-    expect(receipt.textContent ?? '').toContain(`Total Charged: ${buttonPriceStr}`);
+    expect(receipt.textContent ?? '').toContain(`Total: ${buttonPriceStr}`);
 
     act(() => {
       root.unmount();

@@ -490,7 +490,7 @@ export function buildFinerWorksProductSpec(
   const wholesaleTotalUsd = roundCents(
     unitSubtotal * productQty * (1 - volumeDiscountPercent / 100)
   );
-  const suggestedGeoRetailUsd = roundCents(wholesaleTotalUsd * 1.18);
+  const suggestedGeoRetailUsd = roundCents(wholesaleTotalUsd * 1.5);
 
   return {
     productCode,
