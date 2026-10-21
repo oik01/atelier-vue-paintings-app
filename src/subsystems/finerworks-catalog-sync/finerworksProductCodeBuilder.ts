@@ -7,6 +7,7 @@ import type {
   FrameProfileId,
   MatColorId,
   MatWidthId,
+  OrientationMode,
 } from '../../contracts/masterContract';
 import {
   FINERWORKS_MEDIA_SPECS,
@@ -68,7 +69,9 @@ function resolveDefaultMediaForProductType(productTypeId?: FinerWorksProductType
   }
 }
 
-export function validateFinerWorksConfiguration(config: FinerWorksDynamicProductConfig): {
+export function validateFinerWorksConfiguration(
+  config: FinerWorksDynamicProductConfig & { orientation?: OrientationMode }
+): {
   valid: boolean;
   notes: string[];
   normalizedConfig: FinerWorksDynamicProductConfig;
@@ -99,7 +102,7 @@ export function validateFinerWorksConfiguration(config: FinerWorksDynamicProduct
   const styleId =
     typeof config.styleId === 'number' && config.styleId > 0 ? config.styleId : media.defaultStyleId;
 
-  // 2. Validate & clamp print dimensions
+  // 2. Validate & clamp print dimensions (F-21: respect orientation when provided)
   const rawWidth =
     typeof config.printWidthIn === 'number' && Number.isFinite(config.printWidthIn) && config.printWidthIn > 0
       ? config.printWidthIn
@@ -113,6 +116,16 @@ export function validateFinerWorksConfiguration(config: FinerWorksDynamicProduct
 
   let printWidthIn = rawWidth;
   let printHeightIn = rawHeight;
+
+  if (config.orientation === 'landscape' && printWidthIn < printHeightIn) {
+    const tmp = printWidthIn;
+    printWidthIn = printHeightIn;
+    printHeightIn = tmp;
+  } else if (config.orientation === 'portrait' && printWidthIn > printHeightIn) {
+    const tmp = printWidthIn;
+    printWidthIn = printHeightIn;
+    printHeightIn = tmp;
+  }
 
   if (printWidthIn < media.minWidthIn) {
     notes.push(
@@ -288,7 +301,7 @@ export function validateFinerWorksConfiguration(config: FinerWorksDynamicProduct
 }
 
 export function buildFinerWorksProductSpec(
-  input: Partial<FinerWorksDynamicProductConfig>
+  input: Partial<FinerWorksDynamicProductConfig> & { orientation?: OrientationMode }
 ): FinerWorksBuiltProductSpec {
   const defaultMediaId =
     typeof input.mediaId === 'number' && input.mediaId > 0
@@ -329,12 +342,24 @@ export function buildFinerWorksProductSpec(
         ? getFinerWorksGlazingById(input.glazingId)
         : getFinerWorksGlazingByGlassId(input.finerworksGlassId ?? 0);
 
-  const seedConfig: FinerWorksDynamicProductConfig = {
+  let seedWidthIn = input.printWidthIn ?? 24;
+  let seedHeightIn = input.printHeightIn ?? 36;
+  if (input.orientation === 'landscape' && seedWidthIn < seedHeightIn) {
+    const tmp = seedWidthIn;
+    seedWidthIn = seedHeightIn;
+    seedHeightIn = tmp;
+  } else if (input.orientation === 'portrait' && seedWidthIn > seedHeightIn) {
+    const tmp = seedWidthIn;
+    seedWidthIn = seedHeightIn;
+    seedHeightIn = tmp;
+  }
+
+  const seedConfig: FinerWorksDynamicProductConfig & { orientation?: OrientationMode } = {
     productTypeId: input.productTypeId ?? initialMedia.productTypeId,
     mediaId: input.mediaId ?? initialMedia.mediaId,
     styleId: input.styleId ?? initialMedia.defaultStyleId,
-    printWidthIn: input.printWidthIn ?? 24,
-    printHeightIn: input.printHeightIn ?? 36,
+    printWidthIn: seedWidthIn,
+    printHeightIn: seedHeightIn,
     frameProfileId: input.frameProfileId ?? initialFrame.profileId,
     finerworksFrameId: input.finerworksFrameId ?? initialFrame.finerworksFrameId,
     matWidthId: initialMatWidthId,
@@ -345,6 +370,7 @@ export function buildFinerWorksProductSpec(
     finerworksGlassId: initialGlazing.finerworksGlassId,
     quantity: input.quantity ?? 1,
     colorCorrect: input.colorCorrect ?? true,
+    orientation: input.orientation,
   };
 
   const { valid, notes, normalizedConfig } = validateFinerWorksConfiguration(seedConfig);

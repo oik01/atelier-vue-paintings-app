@@ -57,11 +57,13 @@ export type {
 export {
   AcquirePrintModal,
   CheckoutAndOrderModal,
+  validatePaymentCardForm,
 } from './AcquirePrintModal';
 
 export type {
   AcquirePrintModalMode,
   AcquirePrintModalProps,
+  PaymentCardFormData,
 } from './AcquirePrintModal';
 
 export { FinerWorksBrandAndSyncModal } from './FinerWorksBrandAndSyncModal';

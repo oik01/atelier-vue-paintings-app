@@ -188,9 +188,9 @@ async function tryUpstreamFinerWorksCall(
   payload: unknown,
   webApiKey: string,
   appKey: string
-): Promise<Record<string, unknown> | null> {
+): Promise<{ ok: boolean; status: number; data: Record<string, unknown> | null }> {
   if (typeof globalThis.fetch !== 'function') {
-    return null;
+    return { ok: false, status: 0, data: null };
   }
   try {
     const signal =
@@ -215,15 +215,19 @@ async function tryUpstreamFinerWorksCall(
     );
 
     if (!response.ok) {
-      return null;
+      return { ok: false, status: response.status, data: null };
     }
     const json = (await response.json()) as unknown;
     if (json && typeof json === 'object' && !Array.isArray(json)) {
-      return json as Record<string, unknown>;
+      return {
+        ok: true,
+        status: response.status,
+        data: json as Record<string, unknown>,
+      };
     }
-    return null;
+    return { ok: false, status: response.status, data: null };
   } catch {
-    return null;
+    return { ok: false, status: 0, data: null };
   }
 }
 
@@ -307,16 +311,47 @@ export async function handleFinerWorksApiRequest(
   const { webApiKey, appKey, hasLiveCredentials } =
     resolveFinerWorksApiKeys(envOverride);
 
-  // 1. catalog-sync (GET or POST)
-  if (route === 'catalog-sync') {
+  // 1. catalog-sync / catalog / sync / products (GET or POST)
+  if (
+    route === 'catalog-sync' ||
+    route === 'catalog' ||
+    route === 'sync' ||
+    route === 'products'
+  ) {
     const baseSnapshot = getFinerWorksCatalogSnapshot();
-    const snapshot = hasLiveCredentials
-      ? {
-          ...baseSnapshot,
-          apiConnected: true,
-          syncSource: 'finerworks-v3-live-api' as const,
-        }
-      : baseSnapshot;
+    let upstream: { ok: boolean; status: number; data: Record<string, unknown> | null } = {
+      ok: false,
+      status: 0,
+      data: null,
+    };
+    if (hasLiveCredentials) {
+      upstream = await tryUpstreamFinerWorksCall(
+        'list_media_types',
+        'GET',
+        undefined,
+        webApiKey,
+        appKey
+      );
+    }
+    const snapshot =
+      hasLiveCredentials && upstream.ok
+        ? {
+            ...baseSnapshot,
+            apiConnected: true,
+            syncSource: 'finerworks-v3-live-api' as const,
+          }
+        : baseSnapshot;
+
+    if (upstream.ok && upstream.data) {
+      return {
+        statusCode: 200,
+        payload: {
+          ...upstream.data,
+          status: { success: true, code: 200 },
+          snapshot,
+        },
+      };
+    }
 
     return {
       statusCode: 200,
@@ -350,7 +385,7 @@ export async function handleFinerWorksApiRequest(
     });
 
     if (hasLiveCredentials) {
-      await tryUpstreamFinerWorksCall(
+      const upstream = await tryUpstreamFinerWorksCall(
         'get_prices',
         'POST',
         {
@@ -362,6 +397,18 @@ export async function handleFinerWorksApiRequest(
         webApiKey,
         appKey
       );
+      if (upstream.ok && upstream.data) {
+        return {
+          statusCode: 200,
+          payload: {
+            ...upstream.data,
+            status: { success: true, code: 200 },
+            prices: Array.isArray(upstream.data.prices)
+              ? upstream.data.prices
+              : prices,
+          },
+        };
+      }
     }
 
     return {
@@ -391,18 +438,31 @@ export async function handleFinerWorksApiRequest(
     };
   }
 
-  // 4. validate-product (POST -> FinerWorks POST /v3/validate_product)
-  if (route === 'validate-product') {
+  // 4. validate-product / orders/validate (POST -> FinerWorks POST /v3/validate_product)
+  if (route === 'validate-product' || route === 'orders/validate') {
     const spec = resolveProductSpecFromItem(body);
 
     if (hasLiveCredentials) {
-      await tryUpstreamFinerWorksCall(
+      const upstream = await tryUpstreamFinerWorksCall(
         'validate_product',
         'POST',
         { product_code: spec.productCode },
         webApiKey,
         appKey
       );
+      if (upstream.ok && upstream.data) {
+        return {
+          statusCode: 200,
+          payload: {
+            ...upstream.data,
+            status: { success: true, code: 200 },
+            valid: spec.valid,
+            product_code: spec.productCode,
+            validation_notes: spec.validationNotes,
+            spec,
+          },
+        };
+      }
     }
 
     return {
@@ -523,13 +583,25 @@ export async function handleFinerWorksApiRequest(
     };
 
     if (hasLiveCredentials && addressValid) {
-      await tryUpstreamFinerWorksCall(
+      const upstream = await tryUpstreamFinerWorksCall(
         'validate_recipient_address',
         'POST',
         { recipient: normalizedAddress },
         webApiKey,
         appKey
       );
+      if (upstream.ok && upstream.data) {
+        return {
+          statusCode: 200,
+          payload: {
+            ...upstream.data,
+            status: { success: true, code: 200 },
+            address_valid: addressValid,
+            normalized_address: normalizedAddress,
+            validation_notes: validationNotes,
+          },
+        };
+      }
     }
 
     return {
@@ -543,8 +615,8 @@ export async function handleFinerWorksApiRequest(
     };
   }
 
-  // 6. shipping-options (POST -> FinerWorks POST /v3/list_shipping_options_multiple)
-  if (route === 'shipping-options') {
+  // 6. shipping-options / shipping (POST -> FinerWorks POST /v3/list_shipping_options_multiple)
+  if (route === 'shipping-options' || route === 'shipping') {
     let productSpec: FinerWorksBuiltProductSpec | undefined;
 
     if (
@@ -604,13 +676,25 @@ export async function handleFinerWorksApiRequest(
     });
 
     if (hasLiveCredentials) {
-      await tryUpstreamFinerWorksCall(
+      const upstream = await tryUpstreamFinerWorksCall(
         'list_shipping_options_multiple',
         'POST',
         body,
         webApiKey,
         appKey
       );
+      if (upstream.ok && upstream.data) {
+        return {
+          statusCode: 200,
+          payload: {
+            ...upstream.data,
+            status: { success: true, code: 200 },
+            shipping_options: Array.isArray(upstream.data.shipping_options)
+              ? upstream.data.shipping_options
+              : shippingOptions,
+          },
+        };
+      }
     }
 
     return {
@@ -622,8 +706,8 @@ export async function handleFinerWorksApiRequest(
     };
   }
 
-  // 7. submit-order (POST -> FinerWorks POST /v3/submit_orders)
-  if (route === 'submit-order') {
+  // 7. submit-order / orders (POST -> FinerWorks POST /v3/submit_orders)
+  if (route === 'submit-order' || route === 'orders') {
     const requestedBrandId = body.brandId as WhiteLabelBrandId | undefined;
     const brand = requestedBrandId
       ? setActiveWhiteLabelBrand(requestedBrandId)
@@ -649,26 +733,40 @@ export async function handleFinerWorksApiRequest(
         'SD'
     );
 
+    let upstream: { ok: boolean; status: number; data: Record<string, unknown> | null } = {
+      ok: false,
+      status: 0,
+      data: null,
+    };
     if (hasLiveCredentials) {
-      await tryUpstreamFinerWorksCall(
+      upstream = await tryUpstreamFinerWorksCall(
         'submit_orders',
         'POST',
         {
           orders: ordersArray.length > 0 ? ordersArray : [firstOrder],
           validate_only: validateOnly,
-          payment_token: body.payment_token ?? 'STRIPE_GALLERY_TOKEN',
+          payment_token: body.payment_token ?? body.paymentToken ?? '',
         },
         webApiKey,
         appKey
       );
     }
 
+    const isLiveDispatched = hasLiveCredentials && upstream.ok;
+    const dispatchStatus = validateOnly
+      ? 'validated-ready'
+      : isLiveDispatched
+        ? 'dispatched-live'
+        : 'sandbox-queued';
+    const dispatchMode = isLiveDispatched
+      ? 'live-finerworks-v3'
+      : 'sandbox-no-credentials';
+
     const orderConfirmation = {
       order_id: `FW-V3-${Date.now().toString(36).toUpperCase()}`,
       order_po: orderPo,
-      status: validateOnly
-        ? 'validated-ready'
-        : 'submitted-to-finerworks-production',
+      status: dispatchStatus,
+      mode: dispatchMode,
       fulfillment_lab: 'FinerWorks Fine Art & Framing Lab · San Antonio, TX',
       white_label_applied: true,
       active_brand_id: brand.id,
@@ -680,10 +778,32 @@ export async function handleFinerWorksApiRequest(
       orders_accepted: ordersArray.length > 0 ? ordersArray.length : 1,
     };
 
+    if (upstream.ok && upstream.data) {
+      return {
+        statusCode: 200,
+        payload: {
+          ...upstream.data,
+          status: dispatchStatus,
+          mode: dispatchMode,
+          validate_only: validateOnly,
+          order_confirmation: {
+            ...orderConfirmation,
+            ...(upstream.data.order_confirmation &&
+            typeof upstream.data.order_confirmation === 'object'
+              ? (upstream.data.order_confirmation as Record<string, unknown>)
+              : {}),
+            status: dispatchStatus,
+            mode: dispatchMode,
+          },
+        },
+      };
+    }
+
     return {
       statusCode: 200,
       payload: {
-        status: { success: true, code: 200 },
+        status: dispatchStatus,
+        mode: dispatchMode,
         validate_only: validateOnly,
         order_confirmation: orderConfirmation,
       },
@@ -704,13 +824,22 @@ export async function handleFinerWorksApiRequest(
       .slice(0, 10);
 
     if (hasLiveCredentials && normalizedMethod === 'POST') {
-      await tryUpstreamFinerWorksCall(
+      const upstream = await tryUpstreamFinerWorksCall(
         'list_order_status',
         'POST',
         { order_pos: [orderPo] },
         webApiKey,
         appKey
       );
+      if (upstream.ok && upstream.data) {
+        return {
+          statusCode: 200,
+          payload: {
+            ...upstream.data,
+            status: { success: true, code: 200 },
+          },
+        };
+      }
     }
 
     return {
@@ -730,25 +859,46 @@ export async function handleFinerWorksApiRequest(
 
   // 9. test-credentials (POST or GET -> FinerWorks GET /v3/test_my_credentials)
   if (route === 'test-credentials') {
-    if (hasLiveCredentials) {
-      await tryUpstreamFinerWorksCall(
-        'test_my_credentials',
-        'GET',
-        undefined,
-        webApiKey,
-        appKey
-      );
+    if (!hasLiveCredentials) {
+      return {
+        statusCode: 200,
+        payload: {
+          status: 'missing-credentials',
+          credentials_valid: false,
+          mode: 'sandbox-no-credentials',
+          account_tier: 'Sandbox Mode (No Live FinerWorks API Keys Configured)',
+        },
+      };
+    }
+
+    const upstream = await tryUpstreamFinerWorksCall(
+      'test_my_credentials',
+      'GET',
+      undefined,
+      webApiKey,
+      appKey
+    );
+
+    if (upstream.ok && upstream.data) {
+      return {
+        statusCode: 200,
+        payload: {
+          ...upstream.data,
+          status: 'verified-live',
+          credentials_valid: true,
+          mode: 'live-finerworks-v3',
+          account_tier: 'White-Label Gallery Studio',
+        },
+      };
     }
 
     return {
       statusCode: 200,
       payload: {
-        status: { success: true, code: 200 },
-        credentials_valid: true,
-        mode: hasLiveCredentials
-          ? 'live-finerworks-v3'
-          : 'verified-local-finerworks-v3-engine',
-        account_tier: 'White-Label Gallery Studio',
+        status: 'invalid-credentials',
+        credentials_valid: false,
+        mode: 'live-finerworks-v3',
+        account_tier: 'Unverified FinerWorks Credentials',
       },
     };
   }
@@ -771,7 +921,7 @@ export async function handleFinerWorksApiRequest(
     );
 
     if (hasLiveCredentials) {
-      await tryUpstreamFinerWorksCall(
+      const upstream = await tryUpstreamFinerWorksCall(
         'update_user_business_info',
         'PUT',
         {
@@ -781,6 +931,17 @@ export async function handleFinerWorksApiRequest(
         webApiKey,
         appKey
       );
+      if (upstream.ok && upstream.data) {
+        return {
+          statusCode: 200,
+          payload: {
+            ...upstream.data,
+            status: { success: true, code: 200 },
+            active_brand: updatedBrand,
+            company_logo_url_dims: '600x180',
+          },
+        };
+      }
     }
 
     return {

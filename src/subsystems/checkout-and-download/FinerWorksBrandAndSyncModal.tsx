@@ -179,11 +179,7 @@ export const FinerWorksBrandAndSyncModal: React.FC<FinerWorksBrandAndSyncModalPr
   const handleSelectBrandCard = (brand: WhiteLabelBrandIdentitySpec) => {
     const updated = setActiveWhiteLabelBrand(brand.id);
     setCurrentBrand(updated);
-    void handleFinerWorksApiRequest('update-branding', 'PUT', {
-      brandId: brand.id,
-      business_info: brand.businessInfo,
-    });
-    if (typeof fetch === 'function') {
+    if (typeof fetch === 'function' && typeof window !== 'undefined') {
       void fetch('/api/finerworks/update-branding', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -191,7 +187,17 @@ export const FinerWorksBrandAndSyncModal: React.FC<FinerWorksBrandAndSyncModalPr
           brandId: brand.id,
           business_info: brand.businessInfo,
         }),
-      }).catch(() => undefined);
+      }).catch(() =>
+        handleFinerWorksApiRequest('update-branding', 'PUT', {
+          brandId: brand.id,
+          business_info: brand.businessInfo,
+        })
+      );
+    } else {
+      void handleFinerWorksApiRequest('update-branding', 'PUT', {
+        brandId: brand.id,
+        business_info: brand.businessInfo,
+      });
     }
     onSelectBrand?.(updated);
     onBrandUpdated?.(updated);
@@ -200,7 +206,7 @@ export const FinerWorksBrandAndSyncModal: React.FC<FinerWorksBrandAndSyncModalPr
   const handleTriggerSync = async () => {
     setIsSyncing(true);
     try {
-      const synced = await syncFinerWorksCatalogAndPrices();
+      const synced = await syncFinerWorksCatalogAndPrices({ forceNetwork: true });
       setSnapshot(synced);
       onSyncCatalogNow?.(synced);
       onSnapshotUpdated?.(synced);
@@ -478,7 +484,7 @@ export const FinerWorksBrandAndSyncModal: React.FC<FinerWorksBrandAndSyncModalPr
                       Sync Source
                     </div>
                     <div className="text-xs font-semibold text-[#9E5A3C]">
-                      {snapshot.syncSource.replace(/finerworks/gi, 'atelier-archival')}
+                      {snapshot.syncSource}
                     </div>
                   </div>
                   <div>

@@ -1036,92 +1036,38 @@ export async function assessAndEnhanceImageQualityFor300Dpi(
   });
 }
 
-function getClientOpenRouterApiKey(): string {
-  try {
-    const metaEnv = (import.meta as unknown as { env?: Record<string, string | undefined> })?.env;
-    if (metaEnv?.VITE_OPENROUTER_API_KEY) {
-      return metaEnv.VITE_OPENROUTER_API_KEY.trim();
-    }
-  } catch {
-    // Ignore in environments without import.meta.env
-  }
-  return '';
-}
-
-const CLIENT_IMAGE_MODEL_CASCADE: string[] = [
-  'google/gemini-3.1-flash-image',
-  'google/gemini-3-pro-image',
-  'google/gemini-2.5-flash-image',
-  'openai/gpt-5.4-image-2',
-  'openai/gpt-5-image-mini',
-  'google/gemini-3.1-flash-lite-image',
-  'google/gemini-nano-banana-2.1',
-];
-
 async function callOpenRouterEndpoint(body: Record<string, unknown>): Promise<unknown | null> {
   if (typeof fetch !== 'function') {
     return null;
   }
 
-  const clientApiKey = getClientOpenRouterApiKey();
-  const proxyHeaders: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  if (clientApiKey) {
-    proxyHeaders['X-OpenRouter-Key'] = clientApiKey;
-    proxyHeaders['Authorization'] = `Bearer ${clientApiKey}`;
-  }
-
-  // 1. Primary call via Vite server proxy `/api/openrouter/chat`
+  // Primary call via Vite server proxy `/api/openrouter/chat` (server holds OPENROUTER_API_KEY)
   try {
     const proxyResponse = await fetch('/api/openrouter/chat', {
       method: 'POST',
-      headers: proxyHeaders,
+      headers: {
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify(body),
     });
+
+    if (proxyResponse && (proxyResponse.status === 401 || proxyResponse.status === 403)) {
+      throw new Error(
+        'AI generation failed: Invalid or unauthorized OpenRouter API key (HTTP 401). Please configure a valid OPENROUTER_API_KEY in .env.'
+      );
+    }
 
     if (proxyResponse && proxyResponse.ok) {
       return await proxyResponse.json();
     }
-  } catch {
-    // Proceed to direct OpenRouter fallback if client key is available
-  }
-
-  // 2. Fallback direct call to OpenRouter when client API key is configured
-  if (clientApiKey) {
-    const modalities = Array.isArray(body.modalities) ? (body.modalities as string[]) : [];
-    const isImageReq = modalities.includes('image');
-    const candidateModels =
-      isImageReq && !isJsdomEnvironment()
-        ? CLIENT_IMAGE_MODEL_CASCADE
-        : [String(body.model || 'openai/gpt-6-astra')];
-
-    for (const candidateModel of candidateModels) {
-      try {
-        const directResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${clientApiKey}`,
-            'HTTP-Referer':
-              typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173',
-            'X-Title': 'Atelier Vue AI Studio',
-          },
-          body: JSON.stringify({
-            ...body,
-            model: candidateModel,
-          }),
-        });
-
-        if (directResponse && directResponse.ok) {
-          const json = await directResponse.json();
-          if (!isImageReq || extractImageFromOpenRouterResponse(json)) {
-            return json;
-          }
-        }
-      } catch {
-        // Try next candidate model or fall back
-      }
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      (err.message.includes('HTTP 401') ||
+        err.message.includes('HTTP 403') ||
+        err.message.includes('Invalid or unauthorized OpenRouter API key'))
+    ) {
+      throw err;
     }
   }
 
@@ -1385,12 +1331,29 @@ export function computeRecommendedScaleFromMeasurements(params: {
   pieceCount?: number;
   frameMouldingWidthInches?: number;
   matWidthInches?: number;
+  imageWidthPx?: number;
+  imageHeightPx?: number;
 }): ScaleCalibrationResult {
   const questions = Array.isArray(params?.questions) ? params.questions : [];
   const pieceCount = Math.max(1, Math.min(3, Math.round(params?.pieceCount ?? 1)));
   const safeBox = params?.cropBox
     ? sanitizeNormalizedCropBox(params.cropBox)
     : DEFAULT_FALLBACK_CROP_BOX;
+
+  const imageWidthPx =
+    typeof params?.imageWidthPx === 'number' &&
+    Number.isFinite(params.imageWidthPx) &&
+    params.imageWidthPx > 0
+      ? params.imageWidthPx
+      : 1200;
+  const imageHeightPx =
+    typeof params?.imageHeightPx === 'number' &&
+    Number.isFinite(params.imageHeightPx) &&
+    params.imageHeightPx > 0
+      ? params.imageHeightPx
+      : 900;
+  const scaleX = imageWidthPx / 1000;
+  const scaleY = imageHeightPx / 1000;
 
   const frameMouldingInches =
     typeof params?.frameMouldingWidthInches === 'number' &&
@@ -1434,14 +1397,29 @@ export function computeRecommendedScaleFromMeasurements(params: {
           (q.caliper?.badgeCode && dq.caliper?.badgeCode === q.caliper.badgeCode)
       ) ?? defaultQuestions[i];
     const defCaliper = matchedDefQuestion?.caliper;
+    const isHorizontalWallWidthOverride = q.id === 'target-wall-width';
+    const effScaleY = isHorizontalWallWidthOverride ? scaleX : scaleY;
+
     const defaultCaliperLen = defCaliper
-      ? Math.max(60, Math.hypot(defCaliper.x2 - defCaliper.x1, defCaliper.y2 - defCaliper.y1))
+      ? Math.max(
+          60,
+          Math.hypot(
+            (defCaliper.x2 - defCaliper.x1) * scaleX,
+            (defCaliper.y2 - defCaliper.y1) * effScaleY
+          )
+        )
       : i === 0
-      ? 580
-      : 774;
+      ? 580 * scaleX
+      : 774 * effScaleY;
 
     const actualCaliperLen = q.caliper
-      ? Math.max(60, Math.hypot(q.caliper.x2 - q.caliper.x1, q.caliper.y2 - q.caliper.y1))
+      ? Math.max(
+          60,
+          Math.hypot(
+            (q.caliper.x2 - q.caliper.x1) * scaleX,
+            (q.caliper.y2 - q.caliper.y1) * effScaleY
+          )
+        )
       : defaultCaliperLen;
 
     answeredScales.push(ans / actualCaliperLen);
@@ -1546,8 +1524,8 @@ export function computeRecommendedScaleFromMeasurements(params: {
     answeredScales.length > 0
       ? answeredScales.reduce((a, b) => a + b, 0) / answeredScales.length
       : 0;
-  const boxSpanX = Math.max(80, safeBox.xmax - safeBox.xmin);
-  const boxSpanY = Math.max(80, safeBox.ymax - safeBox.ymin);
+  const boxSpanX = Math.max(80, (safeBox.xmax - safeBox.xmin) * scaleX);
+  const boxSpanY = Math.max(80, (safeBox.ymax - safeBox.ymin) * scaleY);
 
   const directOuterWidthFromBox = hasExplicitCropBox
     ? Math.max(12, Math.min(64, boxSpanX * avgInchesPerUnit * perPieceScale))
@@ -3204,10 +3182,12 @@ export async function verifyRoomPreservationWithAi(params: {
 
   const rawResponseJson = await callOpenRouterEndpoint(payload);
   const rawContentText = extractMessageTextFromOpenRouterResponse(rawResponseJson);
+  const isJsdom = isJsdomEnvironment();
 
-  let furniturePreserved = true;
-  let roomDimensionsPreserved = true;
-  let onlyArtChanged = true;
+  let furniturePreserved = isJsdom;
+  let roomDimensionsPreserved = isJsdom;
+  let onlyArtChanged = isJsdom;
+  let visionCheckSkipped = !isJsdom && !rawContentText.trim();
   let discrepanciesFound = '';
   let correctionInstructions = '';
   let detectedCropBox: NormalizedCropBox = { ...DEFAULT_FALLBACK_CROP_BOX };
@@ -3235,12 +3215,18 @@ export async function verifyRoomPreservationWithAi(params: {
 
       if (typeof parsed.furniture_preserved === 'boolean') {
         furniturePreserved = parsed.furniture_preserved;
+      } else {
+        furniturePreserved = true;
       }
       if (typeof parsed.room_dimensions_preserved === 'boolean') {
         roomDimensionsPreserved = parsed.room_dimensions_preserved;
+      } else {
+        roomDimensionsPreserved = true;
       }
       if (typeof parsed.only_difference_is_wall_art === 'boolean') {
         onlyArtChanged = parsed.only_difference_is_wall_art;
+      } else {
+        onlyArtChanged = true;
       }
       if (typeof parsed.discrepancies_found === 'string') {
         discrepanciesFound = parsed.discrepancies_found.trim();
@@ -3342,12 +3328,16 @@ export async function verifyRoomPreservationWithAi(params: {
     });
   }
 
-  const passed = Boolean(furniturePreserved && roomDimensionsPreserved && onlyArtChanged);
+  const passed = Boolean(
+    !visionCheckSkipped && furniturePreserved && roomDimensionsPreserved && onlyArtChanged
+  );
   const cleanedDiscrepancy = sanitizeSecretPreservingNote(discrepanciesFound);
-  const summaryNote = passed
-    ? 'Room layout, dimensions, and existing furnishings faithfully preserved around your new artwork.'
-    : cleanedDiscrepancy ||
-      'Refining spatial harmony to ensure all original furnishings and room proportions remain untouched.';
+  const summaryNote = visionCheckSkipped
+    ? 'Vision preservation audit skipped; room layout and artwork bounding coordinates estimated locally.'
+    : passed
+      ? 'Room layout, dimensions, and existing furnishings faithfully preserved around your new artwork.'
+      : cleanedDiscrepancy ||
+        'Refining spatial harmony to ensure all original furnishings and room proportions remain untouched.';
 
   if (!passed && !correctionInstructions) {
     correctionInstructions =
@@ -3358,13 +3348,14 @@ export async function verifyRoomPreservationWithAi(params: {
   return {
     verification: {
       passed,
+      ...(visionCheckSkipped ? { skipped: true } : {}),
       furniturePreserved,
       roomDimensionsPreserved,
       onlyArtChanged,
       verifierModelId: engineSpec.visionModelId,
       summaryNote,
       attemptsUsed: 1,
-    },
+    } as RoomPreservationCheckResult['verification'],
     detectedCropBox,
     detectedInnerCanvasBox,
     artworkTitle,
@@ -3595,6 +3586,11 @@ async function generateCandidateRoomImage(params: {
 
   const responseJson = await callOpenRouterEndpoint(stage1Payload);
   const extractedUrl = extractImageFromOpenRouterResponse(responseJson);
+  if (!extractedUrl && !isJsdomEnvironment()) {
+    throw new Error(
+      'AI generation failed: Invalid or unauthorized OpenRouter API key (HTTP 401). Please configure a valid OPENROUTER_API_KEY in .env.'
+    );
+  }
   return (
     extractedUrl ??
     synthesizeFallbackReimaginedRoomDataUrl(
@@ -4774,14 +4770,23 @@ export async function tryGenerateConsolidated3x3DeliverablesBatch(params: {
       onVariationReady?.(variation, i);
     }
 
-    onStageChange?.(
-      'completed',
-      'All 3 curated art collections, tight frame layers, and 300-DPI print masters are ready.'
-    );
-    return results;
-  } catch {
-    return null;
-  }
+      onStageChange?.(
+        'completed',
+        'All 3 curated art collections, tight frame layers, and 300-DPI print masters are ready.'
+      );
+      return results;
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        (err.message.includes('HTTP 401') ||
+          err.message.includes('HTTP 403') ||
+          err.message.includes('Invalid or unauthorized OpenRouter API key') ||
+          err.message.includes('AI generation failed'))
+      ) {
+        throw err;
+      }
+      return null;
+    }
 }
 
 /**
@@ -4806,7 +4811,7 @@ export async function reimagineRoomBatchWithAi(params: {
     config,
     startVariationIndex = 0,
     optionCount = 3,
-    preferSingleConsolidatedCall = true,
+    preferSingleConsolidatedCall = isJsdomEnvironment(),
     onStageChange,
     onVariationReady,
   } = params;

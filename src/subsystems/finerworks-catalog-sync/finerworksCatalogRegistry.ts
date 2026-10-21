@@ -475,6 +475,17 @@ export const FINERWORKS_FRAME_MOULDINGS: FinerWorksFrameMouldingSpec[] = [
   ...FINERWORKS_ALL_231_FRAMES,
 ];
 
+// F-10: Dynamically synchronize FINERWORKS_FRAME_COLLECTIONS frameCount to match
+// the actual number of frames in FINERWORKS_ALL_231_FRAMES for each collection.
+for (const collection of FINERWORKS_FRAME_COLLECTIONS) {
+  const actualCount = FINERWORKS_ALL_231_FRAMES.filter(
+    (frame) =>
+      frame.collectionId === collection.collectionId ||
+      frame.collectionSlug === collection.slug
+  ).length;
+  collection.frameCount = actualCount;
+}
+
 // Dynamically register all 231 catalogue frames onto FRAME_PROFILES as non-enumerable properties
 // so FRAME_PROFILES[frameId] and `frameId in FRAME_PROFILES` work for all 231 frames while
 // Object.keys(FRAME_PROFILES) preserves the 6 canonical keys for legacy partner-quote loops.

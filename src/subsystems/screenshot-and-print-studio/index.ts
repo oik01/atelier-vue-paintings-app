@@ -49,13 +49,17 @@ export interface ScreenshotAndPrintStudioProps {
   selectedMediaId?: number;
   selectedGlazingId?: FinerWorksGlazingId;
   selectedFinerWorksSizeId?: FinerWorksStandardSizeId;
+  selectedOrientation?: 'landscape' | 'portrait' | 'square';
   customPrintWidthIn?: number;
   customPrintHeightIn?: number;
   includeBleed?: boolean;
   isDownloadingPrint?: boolean;
+  hasUnlockedDigitalMaster?: boolean;
   estimatedRetailPriceUsd?: number;
   scaleRecommendation?: ScaleCalibrationResult | null;
   onOpenCaliperSizingTool?: () => void;
+  onSelectOrientation?: (orientation: 'landscape' | 'portrait' | 'square') => void;
+  onOpenDownloadLicenseModal?: () => void;
   onSelectViewpoint?: (
     viewpointIndex: number,
     viewpoint: ReimaginedRoomViewpoint
@@ -132,13 +136,17 @@ export const ScreenshotAndPrintStudio: React.FC<ScreenshotAndPrintStudioProps> =
   selectedMediaId,
   selectedGlazingId,
   selectedFinerWorksSizeId,
+  selectedOrientation,
   customPrintWidthIn,
   customPrintHeightIn,
   includeBleed,
   isDownloadingPrint = false,
+  hasUnlockedDigitalMaster = false,
   estimatedRetailPriceUsd,
   scaleRecommendation,
   onOpenCaliperSizingTool,
+  onSelectOrientation,
+  onOpenDownloadLicenseModal,
   onSelectViewpoint,
   onSelectArtPiece,
   onCropBoxChange,
@@ -191,6 +199,9 @@ export const ScreenshotAndPrintStudio: React.FC<ScreenshotAndPrintStudioProps> =
     selectedGlazingId ?? variation.finerworksGlazingId ?? 'clear-acrylic'
   );
   const [internalIncludeBleed, setInternalIncludeBleed] = useState<boolean>(false);
+  const [internalOrientation, setInternalOrientation] = useState<
+    'landscape' | 'portrait' | 'square'
+  >(selectedOrientation ?? 'portrait');
   const [internalViewpointIndex, setInternalViewpointIndex] = useState<number>(
     activeViewpointIndex ?? variation.activeViewpointIndex ?? 0
   );
@@ -307,6 +318,14 @@ export const ScreenshotAndPrintStudio: React.FC<ScreenshotAndPrintStudioProps> =
   const effectiveGlazingId = selectedGlazingId ?? internalGlazingId;
   const effectiveIncludeBleed =
     includeBleed !== undefined ? includeBleed : internalIncludeBleed;
+  const effectiveOrientation = selectedOrientation ?? internalOrientation;
+
+  const handleSelectOrientation = (
+    orientation: 'landscape' | 'portrait' | 'square'
+  ) => {
+    setInternalOrientation(orientation);
+    onSelectOrientation?.(orientation);
+  };
 
   const effectiveCroppedUrl =
     croppedScreenshotDataUrl ??
@@ -412,6 +431,13 @@ export const ScreenshotAndPrintStudio: React.FC<ScreenshotAndPrintStudioProps> =
     activeArtPieceIndex: effectiveArtPieceIndex,
     isSynthesizingPrint,
     scaleRecommendation: effectiveScaleRecommendation,
+    selectedFrameId: effectiveFrameId,
+    selectedMatWidthId: effectiveMatWidthId,
+    selectedMatColorId: effectiveMatColorId,
+    selectedSizeId: effectiveSizeId,
+    selectedOrientation: effectiveOrientation,
+    customWidthIn: customPrintWidthIn,
+    customHeightIn: customPrintHeightIn,
     onOpenCaliperSizingTool,
     onSelectViewpoint: handleSelectViewpoint,
     onSelectArtPiece: handleSelectArtPiece,
@@ -439,13 +465,17 @@ export const ScreenshotAndPrintStudio: React.FC<ScreenshotAndPrintStudioProps> =
       selectedMediaId: effectiveMediaId,
       selectedGlazingId: effectiveGlazingId,
       selectedFinerWorksSizeId,
+      selectedOrientation: effectiveOrientation,
       customPrintWidthIn,
       customPrintHeightIn,
       includeBleed: effectiveIncludeBleed,
       isDownloadingPrint,
+      hasUnlockedDigitalMaster,
       estimatedRetailPriceUsd,
       scaleRecommendation: effectiveScaleRecommendation,
       onOpenCaliperSizingTool,
+      onSelectOrientation: handleSelectOrientation,
+      onOpenDownloadLicenseModal,
       onSelectArtPiece: handleSelectArtPiece,
       onSelectSize: handleSelectSize,
       onSelectFrame: handleSelectFrame,

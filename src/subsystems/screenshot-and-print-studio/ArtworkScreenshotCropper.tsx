@@ -1,8 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   FinerWorksOptionsVerification,
+  FRAME_PROFILES,
+  FrameProfileId,
   GeneratedArtPiece,
+  MAT_COLORS,
+  MAT_WIDTHS,
+  MatColorId,
+  MatWidthId,
   NormalizedCropBox,
+  PRINT_SIZES,
+  PrintSizeId,
   ReimaginedRoomVariation,
   ReimaginedRoomViewpoint,
   RoomPreservationVerification,
@@ -14,6 +22,10 @@ import {
   getFinerWorksGlazingById,
   getFinerWorksMediaById,
 } from '../finerworks-catalog-sync';
+import {
+  clampNormalizedCropBox,
+  cropImageFromNormalizedBox,
+} from './identicalPrintUpscaler';
 
 export interface ArtworkScreenshotCropperProps {
   variation: ReimaginedRoomVariation;
@@ -26,6 +38,13 @@ export interface ArtworkScreenshotCropperProps {
   croppedScreenshotDataUrl?: string;
   isSynthesizingPrint?: boolean;
   scaleRecommendation?: ScaleCalibrationResult | null;
+  selectedFrameId?: FrameProfileId;
+  selectedMatWidthId?: MatWidthId;
+  selectedMatColorId?: MatColorId;
+  selectedSizeId?: PrintSizeId;
+  selectedOrientation?: 'landscape' | 'portrait' | 'square';
+  customWidthIn?: number;
+  customHeightIn?: number;
   onOpenCaliperSizingTool?: () => void;
   onSelectViewpoint?: (
     viewpointIndex: number,
@@ -97,10 +116,25 @@ export const ArtworkScreenshotCropper: React.FC<ArtworkScreenshotCropperProps> =
   onSelectVariation,
   activeViewpointIndex,
   activeArtPieceIndex,
+  activeCropBox,
+  croppedScreenshotDataUrl,
+  isSynthesizingPrint = false,
   scaleRecommendation,
+  selectedFrameId,
+  selectedMatWidthId,
+  selectedMatColorId,
+  selectedSizeId,
+  selectedOrientation = 'portrait',
+  customWidthIn,
+  customHeightIn,
   onOpenCaliperSizingTool,
   onSelectViewpoint,
   onSelectArtPiece,
+  onCropBoxChange,
+  onResynthesizePrintFromCrop,
+  onCropChange,
+  onUpdateCropBox,
+  onResynthesizePrint,
 }) => {
   const provenanceLabel = 'Atelier Vue Bespoke Commission';
 
@@ -404,6 +438,200 @@ export const ArtworkScreenshotCropper: React.FC<ArtworkScreenshotCropperProps> =
       attemptsUsed: 1,
     };
 
+  const isPreservationVerified =
+    preservationCheck?.passed === true && !preservationCheck?.skipped;
+
+  const baseOverlayCropBox = useMemo<NormalizedCropBox>(() => {
+    const raw =
+      activeCropBox ??
+      activeArtPiece?.internalBounds ??
+      activeViewpoint.activeCropBox ??
+      variation.activeCropBox ??
+      activeViewpoint.detectedCropBox ??
+      variation.detectedCropBox ?? {
+        ymin: 180,
+        xmin: 260,
+        ymax: 580,
+        xmax: 740,
+      };
+    return clampNormalizedCropBox(raw);
+  }, [
+    activeCropBox,
+    activeArtPiece,
+    activeViewpoint.activeCropBox,
+    activeViewpoint.detectedCropBox,
+    variation.activeCropBox,
+    variation.detectedCropBox,
+  ]);
+
+  const [localOverlayBox, setLocalOverlayBox] = useState<NormalizedCropBox>(
+    baseOverlayCropBox
+  );
+  const [refinementDirectionText, setRefinementDirectionText] =
+    useState<string>('');
+
+  useEffect(() => {
+    setLocalOverlayBox(baseOverlayCropBox);
+  }, [
+    baseOverlayCropBox.ymin,
+    baseOverlayCropBox.xmin,
+    baseOverlayCropBox.ymax,
+    baseOverlayCropBox.xmax,
+    variation.id,
+    safeViewpointIdx,
+    safeArtPieceIdx,
+  ]);
+
+  const effectiveFrameId: FrameProfileId =
+    selectedFrameId ??
+    activeViewpoint.detectedFrameId ??
+    variation.detectedFrameId ??
+    'natural-white-oak';
+  const effectiveMatWidthId: MatWidthId =
+    selectedMatWidthId ??
+    activeViewpoint.detectedMatWidthId ??
+    variation.detectedMatWidthId ??
+    '1.5in';
+  const effectiveMatColorId: MatColorId =
+    selectedMatColorId ??
+    activeViewpoint.detectedMatColorId ??
+    variation.detectedMatColorId ??
+    'archival-ivory';
+  const effectiveSizeId: PrintSizeId = selectedSizeId ?? '24x36';
+
+  const activeFrameSpec =
+    FRAME_PROFILES[effectiveFrameId] ?? FRAME_PROFILES['natural-white-oak'];
+  const activeMatWidthSpec =
+    MAT_WIDTHS[effectiveMatWidthId] ?? MAT_WIDTHS['1.5in'];
+  const activeMatColorSpec =
+    MAT_COLORS[effectiveMatColorId] ?? MAT_COLORS['archival-ivory'];
+  const activeSizeSpec =
+    PRINT_SIZES[effectiveSizeId] ?? PRINT_SIZES['24x36'];
+
+  const effectivePrintWIn = useMemo(() => {
+    const rawW =
+      customWidthIn ??
+      activeViewpoint.customPrintWidthIn ??
+      variation.customPrintWidthIn ??
+      activeSizeSpec.widthInches;
+    const rawH =
+      customHeightIn ??
+      activeViewpoint.customPrintHeightIn ??
+      variation.customPrintHeightIn ??
+      activeSizeSpec.heightInches;
+    if (selectedOrientation === 'square') {
+      return Math.min(rawW, rawH);
+    }
+    if (selectedOrientation === 'landscape' && rawW < rawH) {
+      return rawH;
+    }
+    if (selectedOrientation === 'portrait' && rawW > rawH) {
+      return rawH;
+    }
+    return rawW;
+  }, [
+    customWidthIn,
+    customHeightIn,
+    activeViewpoint.customPrintWidthIn,
+    activeViewpoint.customPrintHeightIn,
+    variation.customPrintWidthIn,
+    variation.customPrintHeightIn,
+    activeSizeSpec.widthInches,
+    activeSizeSpec.heightInches,
+    selectedOrientation,
+  ]);
+
+  const effectivePrintHIn = useMemo(() => {
+    const rawW =
+      customWidthIn ??
+      activeViewpoint.customPrintWidthIn ??
+      variation.customPrintWidthIn ??
+      activeSizeSpec.widthInches;
+    const rawH =
+      customHeightIn ??
+      activeViewpoint.customPrintHeightIn ??
+      variation.customPrintHeightIn ??
+      activeSizeSpec.heightInches;
+    if (selectedOrientation === 'square') {
+      return Math.min(rawW, rawH);
+    }
+    if (selectedOrientation === 'landscape' && rawW < rawH) {
+      return rawW;
+    }
+    if (selectedOrientation === 'portrait' && rawW > rawH) {
+      return rawW;
+    }
+    return rawH;
+  }, [
+    customWidthIn,
+    customHeightIn,
+    activeViewpoint.customPrintWidthIn,
+    activeViewpoint.customPrintHeightIn,
+    variation.customPrintWidthIn,
+    variation.customPrintHeightIn,
+    activeSizeSpec.widthInches,
+    activeSizeSpec.heightInches,
+    selectedOrientation,
+  ]);
+
+  const handleAdjustPlacementBounds = useCallback(
+    async (delta: Partial<NormalizedCropBox>) => {
+      const nextBox = clampNormalizedCropBox({
+        ymin: localOverlayBox.ymin + (delta.ymin ?? 0),
+        xmin: localOverlayBox.xmin + (delta.xmin ?? 0),
+        ymax: localOverlayBox.ymax + (delta.ymax ?? 0),
+        xmax: localOverlayBox.xmax + (delta.xmax ?? 0),
+      });
+      setLocalOverlayBox(nextBox);
+      const nextCropped = await cropImageFromNormalizedBox(
+        activeViewpoint.reimaginedRoomDataUrl || variation.reimaginedRoomDataUrl,
+        nextBox
+      );
+      onCropBoxChange?.(nextBox, nextCropped, safeViewpointIdx);
+      onCropChange?.(nextBox, nextCropped, safeViewpointIdx);
+      onUpdateCropBox?.(nextBox, nextCropped, safeViewpointIdx);
+    },
+    [
+      localOverlayBox,
+      activeViewpoint.reimaginedRoomDataUrl,
+      variation.reimaginedRoomDataUrl,
+      onCropBoxChange,
+      onCropChange,
+      onUpdateCropBox,
+      safeViewpointIdx,
+    ]
+  );
+
+  const handleResynthesizeFromBounds = useCallback(async () => {
+    const nextCropped = await cropImageFromNormalizedBox(
+      activeViewpoint.reimaginedRoomDataUrl || variation.reimaginedRoomDataUrl,
+      localOverlayBox
+    );
+    onCropBoxChange?.(localOverlayBox, nextCropped, safeViewpointIdx);
+    onCropChange?.(localOverlayBox, nextCropped, safeViewpointIdx);
+    onUpdateCropBox?.(localOverlayBox, nextCropped, safeViewpointIdx);
+    await onResynthesizePrintFromCrop?.(
+      localOverlayBox,
+      nextCropped,
+      safeViewpointIdx
+    );
+    await onResynthesizePrint?.(
+      localOverlayBox,
+      nextCropped,
+      safeViewpointIdx
+    );
+  }, [
+    activeViewpoint.reimaginedRoomDataUrl,
+    variation.reimaginedRoomDataUrl,
+    localOverlayBox,
+    onCropBoxChange,
+    onCropChange,
+    onUpdateCropBox,
+    onResynthesizePrintFromCrop,
+    onResynthesizePrint,
+    safeViewpointIdx,
+  ]);
+
   const fallbackBuiltProductSpec = useMemo(() => {
     const mediaId =
       activeViewpoint.finerworksMediaId ?? variation.finerworksMediaId ?? 42;
@@ -536,34 +764,54 @@ export const ArtworkScreenshotCropper: React.FC<ArtworkScreenshotCropperProps> =
       <div
         data-testid="dual-verification-provenance-bar"
         className="sr-only"
+        tabIndex={-1}
+        aria-hidden="true"
       >
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_1fr_auto] lg:items-stretch">
           {/* Badge 1: Agent 1 — Room & Furnishings Preservation */}
-          <div
-            data-testid="preservation-verification-badge"
-            className="flex flex-col justify-between gap-2.5 overflow-hidden rounded-[10px] border px-3.5 py-3"
-          >
-            <div className="flex items-start gap-2.5">
-              <span aria-hidden="true">✓</span>
-              <div className="min-w-0 space-y-0.5">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span>✓ Room &amp; Furnishings 100% Preserved</span>
-                  <span>{provenanceLabel}</span>
+          {isPreservationVerified ? (
+            <div
+              data-testid="preservation-verification-badge"
+              className="flex flex-col justify-between gap-2.5 overflow-hidden rounded-[10px] border px-3.5 py-3"
+            >
+              <div className="flex items-start gap-2.5">
+                <span aria-hidden="true">✓</span>
+                <div className="min-w-0 space-y-0.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span>✓ Room &amp; Furnishings 100% Preserved</span>
+                    <span>{provenanceLabel}</span>
+                  </div>
+                  <p>
+                    Spatial Fidelity Assured · Pre-existing furnishings &amp; room
+                    dimensions faithfully preserved
+                  </p>
+                  <p>{cleanRoomStyleSummary}</p>
                 </div>
-                <p>
-                  Spatial Fidelity Assured · Pre-existing furnishings &amp; room
-                  dimensions faithfully preserved
-                </p>
-                <p>{cleanRoomStyleSummary}</p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-[10px] font-medium">
+                <span>✓ Furnishings Intact</span>
+                <span>✓ Room Dimensions True</span>
+                <span>✓ Seamless Wall Integration</span>
               </div>
             </div>
-
-            <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-[10px] font-medium">
-              <span>✓ Furnishings Intact</span>
-              <span>✓ Room Dimensions True</span>
-              <span>✓ Seamless Wall Integration</span>
+          ) : (
+            <div
+              data-testid="preservation-verification-pending-badge"
+              className="flex flex-col justify-between gap-2.5 overflow-hidden rounded-[10px] border px-3.5 py-3"
+            >
+              <div className="flex items-start gap-2.5">
+                <span aria-hidden="true">i</span>
+                <div className="min-w-0 space-y-0.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span>Spatial Verification Pending</span>
+                    <span>{provenanceLabel}</span>
+                  </div>
+                  <p>{sanitizedAgent1Summary}</p>
+                </div>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Badge 2: Agent 2 — Archival Frame, Mat & Scale Verification */}
           <div
@@ -591,6 +839,7 @@ export const ArtworkScreenshotCropper: React.FC<ArtworkScreenshotCropperProps> =
             type="button"
             data-testid="toggle-dual-audit-receipt-btn"
             aria-expanded={isDualAuditOpen}
+            tabIndex={-1}
             onClick={() => setIsDualAuditOpen((prev) => !prev)}
           >
             <span>
@@ -671,6 +920,8 @@ export const ArtworkScreenshotCropper: React.FC<ArtworkScreenshotCropperProps> =
           role="tablist"
           aria-label="Curated Room Options Switcher"
           className="sr-only"
+          tabIndex={-1}
+          aria-hidden="true"
         >
           {variations.map((opt, idx) => {
             const isOptActive =
@@ -682,6 +933,7 @@ export const ArtworkScreenshotCropper: React.FC<ArtworkScreenshotCropperProps> =
                 key={`stage-switcher-${opt.id}`}
                 type="button"
                 role="tab"
+                tabIndex={-1}
                 aria-selected={isOptActive}
                 data-testid={`visualizer-option-tab-${idx}`}
                 onClick={() => onSelectVariation(opt.id)}
@@ -774,6 +1026,8 @@ export const ArtworkScreenshotCropper: React.FC<ArtworkScreenshotCropperProps> =
 
       {/* Multi-Angle Viewpoint Selector Strip ([SPEC PATCH #15]) — visible only when multiple viewpoints exist */}
       <div
+        tabIndex={viewpoints.length <= 1 ? -1 : undefined}
+        aria-hidden={viewpoints.length <= 1 ? 'true' : undefined}
         className={
           viewpoints.length > 1
             ? 'flex flex-col sm:flex-row sm:items-center justify-between gap-2'
@@ -807,7 +1061,9 @@ export const ArtworkScreenshotCropper: React.FC<ArtworkScreenshotCropperProps> =
                 key={vp.angleId || idx}
                 type="button"
                 role="tab"
+                tabIndex={viewpoints.length <= 1 ? -1 : undefined}
                 aria-selected={isSelected}
+                aria-pressed={isSelected}
                 data-testid={`viewpoint-pill-${idx}`}
                 onClick={() => handleSelectViewpoint(idx)}
                 className={`min-h-[44px] shrink-0 snap-start rounded-xl px-3.5 py-2 text-xs font-semibold transition-all flex items-center gap-2 border ${
@@ -868,6 +1124,57 @@ export const ArtworkScreenshotCropper: React.FC<ArtworkScreenshotCropperProps> =
             draggable={false}
             className="h-full w-full object-cover select-none transition-all duration-300"
           />
+
+          {/* Live Dynamic Frame + Matboard + Artwork On-Wall Overlay (`live-room-frame-overlay`) */}
+          {!isComparingOriginal && (
+            <div
+              data-testid="live-room-frame-overlay"
+              data-frame-id={effectiveFrameId}
+              data-mat-width={effectiveMatWidthId}
+              data-mat-color={effectiveMatColorId}
+              data-size-id={effectiveSizeId}
+              data-orientation={selectedOrientation}
+              style={{
+                top: `${(localOverlayBox.ymin / 10).toFixed(2)}%`,
+                left: `${(localOverlayBox.xmin / 10).toFixed(2)}%`,
+                width: `${(
+                  (localOverlayBox.xmax - localOverlayBox.xmin) /
+                  10
+                ).toFixed(2)}%`,
+                height: `${(
+                  (localOverlayBox.ymax - localOverlayBox.ymin) /
+                  10
+                ).toFixed(2)}%`,
+                borderStyle: 'solid',
+                borderWidth: `${Math.max(
+                  2,
+                  Math.round(activeFrameSpec.mouldingWidthInches * 5)
+                )}px`,
+                borderColor: activeFrameSpec.primaryHex,
+                padding: `${Math.round(activeMatWidthSpec.inches * 5)}px`,
+                backgroundColor:
+                  activeMatWidthSpec.inches > 0
+                    ? activeMatColorSpec.hex
+                    : activeFrameSpec.secondaryHex,
+                boxShadow:
+                  '0 12px 28px rgba(15, 12, 10, 0.38), inset 0 0 0 1px rgba(28, 25, 23, 0.22)',
+              }}
+              className="pointer-events-none absolute z-10 overflow-hidden rounded-[2px] transition-all duration-200"
+            >
+              <img
+                src={
+                  activeArtPiece.identicalPrintMasterDataUrl ||
+                  croppedScreenshotDataUrl ||
+                  activeViewpoint.croppedScreenshotDataUrl ||
+                  variation.identicalPrintMasterDataUrl ||
+                  activeViewpoint.reimaginedRoomDataUrl
+                }
+                alt={`${activeArtPiece.title} in ${activeFrameSpec.name} (${effectivePrintWIn}" × ${effectivePrintHIn}")`}
+                draggable={false}
+                className="h-full w-full object-cover select-none"
+              />
+            </div>
+          )}
 
           {/* Subtle Top-Left Editorial Status Pill */}
           <div className="pointer-events-none absolute top-3.5 left-3.5 z-10 flex flex-wrap items-center gap-2">
@@ -982,7 +1289,7 @@ export const ArtworkScreenshotCropper: React.FC<ArtworkScreenshotCropperProps> =
                     aria-selected={isOptActive}
                     data-testid={`stage-option-dot-${idx}`}
                     onClick={() => handleSelectOptionByIndex(idx)}
-                    className={`min-h-[40px] inline-flex items-center gap-2 rounded-xl border px-3 py-1.5 text-xs font-semibold transition-all cursor-pointer ${
+                    className={`min-h-[44px] inline-flex items-center gap-2 rounded-xl border px-3 py-1.5 text-xs font-semibold transition-all cursor-pointer ${
                       isOptActive
                         ? 'border-[#9E5A3C] bg-[#9E5A3C] text-[#FAF6EE] shadow-xs'
                         : 'border-[#DFD7C8] bg-[#FAF6EE] text-[#1F1C18] hover:border-[#9E5A3C]/60'
@@ -1009,6 +1316,88 @@ export const ArtworkScreenshotCropper: React.FC<ArtworkScreenshotCropperProps> =
             </div>
           </div>
         )}
+
+        {/* Interactive Edit & Refine Wall Artwork Control Bar (`artwork-edit-toolbar`) */}
+        <div
+          data-testid="artwork-edit-toolbar"
+          className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] p-3.5 shadow-2xs"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center rounded-lg bg-[#F5F0E6] border border-[#DFD7C8] px-2.5 py-1 font-mono text-[11px] font-semibold text-[#4A3B32]">
+              Edit &amp; Refine Wall Artwork ({effectivePrintWIn}&quot; × {effectivePrintHIn}&quot; · {activeFrameSpec.name})
+            </span>
+
+            <div className="inline-flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                data-testid="nudge-art-left-btn"
+                onClick={() => handleAdjustPlacementBounds({ xmin: -15, xmax: -15 })}
+                className="min-h-[44px] px-2.5 py-1.5 rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] text-xs font-medium text-[#1F1C18] hover:bg-[#EFECE6] cursor-pointer"
+              >
+                ← Nudge Left
+              </button>
+              <button
+                type="button"
+                data-testid="nudge-art-right-btn"
+                onClick={() => handleAdjustPlacementBounds({ xmin: 15, xmax: 15 })}
+                className="min-h-[44px] px-2.5 py-1.5 rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] text-xs font-medium text-[#1F1C18] hover:bg-[#EFECE6] cursor-pointer"
+              >
+                Nudge Right →
+              </button>
+              <button
+                type="button"
+                data-testid="expand-art-region-btn"
+                onClick={() =>
+                  handleAdjustPlacementBounds({
+                    ymin: -15,
+                    xmin: -15,
+                    ymax: 15,
+                    xmax: 15,
+                  })
+                }
+                className="min-h-[44px] px-2.5 py-1.5 rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] text-xs font-medium text-[#1F1C18] hover:bg-[#EFECE6] cursor-pointer"
+              >
+                + Expand Frame
+              </button>
+              <button
+                type="button"
+                data-testid="tighten-art-region-btn"
+                onClick={() =>
+                  handleAdjustPlacementBounds({
+                    ymin: 15,
+                    xmin: 15,
+                    ymax: -15,
+                    xmax: -15,
+                  })
+                }
+                className="min-h-[44px] px-2.5 py-1.5 rounded-lg border border-[#DFD7C8] bg-[#F5F0E6] text-xs font-medium text-[#1F1C18] hover:bg-[#EFECE6] cursor-pointer"
+              >
+                − Tighten Frame
+              </button>
+            </div>
+          </div>
+
+          <div className="flex flex-1 flex-col sm:flex-row items-stretch sm:items-center gap-2 lg:max-w-xl">
+            <input
+              type="text"
+              data-testid="artwork-refine-prompt-input"
+              aria-label="Artistic refinement direction"
+              value={refinementDirectionText}
+              onChange={(e) => setRefinementDirectionText(e.target.value)}
+              placeholder="Refine artistic direction (e.g., warmer ochre impasto, softer horizon)..."
+              className="min-h-[44px] flex-1 rounded-xl border border-[#DFD7C8] bg-white px-3.5 py-2 text-xs text-[#1F1C18] focus:border-[#9E5A3C] focus:outline-none"
+            />
+            <button
+              type="button"
+              data-testid="resynthesize-from-crop-btn"
+              disabled={isSynthesizingPrint}
+              onClick={handleResynthesizeFromBounds}
+              className="min-h-[44px] shrink-0 inline-flex items-center justify-center rounded-xl bg-[#1F1C18] hover:bg-[#9E5A3C] disabled:opacity-50 px-4 py-2 text-xs font-semibold text-[#FAF6EE] transition-colors cursor-pointer"
+            >
+              {isSynthesizingPrint ? 'Updating Art...' : 'Update Art on Wall'}
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Single Optional Post-Visualization Approval & Caliper Sizing Tool Bar */}
@@ -1053,6 +1442,8 @@ export const ArtworkScreenshotCropper: React.FC<ArtworkScreenshotCropperProps> =
 
       {/* Finalized Art Piece(s) in This Space Strip ([SPEC PATCH #19] & [#20]) — visible only when multiple pieces are placed in the same room */}
       <div
+        tabIndex={artPieces.length <= 1 ? -1 : undefined}
+        aria-hidden={artPieces.length <= 1 ? 'true' : undefined}
         className={
           artPieces.length > 1
             ? 'rounded-xl border border-[#DFD7C8] bg-[#F5F0E6] p-4 space-y-3'
@@ -1088,7 +1479,9 @@ export const ArtworkScreenshotCropper: React.FC<ArtworkScreenshotCropperProps> =
                 key={piece.id || idx}
                 type="button"
                 role="tab"
+                tabIndex={artPieces.length <= 1 ? -1 : undefined}
                 aria-selected={isSelected}
+                aria-pressed={isSelected}
                 data-testid={`art-piece-pill-${idx}`}
                 onClick={() => handleSelectArtPiece(idx)}
                 className={`min-h-[44px] flex items-center gap-3 rounded-xl p-2.5 text-left transition-all border ${

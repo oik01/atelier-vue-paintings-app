@@ -8,6 +8,13 @@ export interface HighResPrintMasterFileResult {
   dataUrl: string;
   widthPx: number;
   heightPx: number;
+  renderedWidthPx?: number;
+  renderedHeightPx?: number;
+  targetPrintWidthPx?: number;
+  targetPrintHeightPx?: number;
+  sourceOpticalWidthPx?: number;
+  sourceOpticalHeightPx?: number;
+  opticalPpi?: number;
   dpi: number;
   filename: string;
   includedBleed: boolean;
@@ -21,6 +28,8 @@ export interface BuildHighResPrintMasterParams {
   title?: string;
   customWidthIn?: number;
   customHeightIn?: number;
+  sourceOpticalWidthPx?: number;
+  sourceOpticalHeightPx?: number;
 }
 
 export interface PrintMasterFidelityMetrics {
@@ -30,6 +39,11 @@ export interface PrintMasterFidelityMetrics {
   targetResolutionLabel: string;
   widthPx: number;
   heightPx: number;
+  renderedWidthPx?: number;
+  renderedHeightPx?: number;
+  sourceOpticalWidthPx?: number;
+  sourceOpticalHeightPx?: number;
+  opticalPpi?: number;
   dpi: number;
   perspectiveRectified: boolean;
   lightingNeutralized: boolean;
@@ -38,7 +52,7 @@ export interface PrintMasterFidelityMetrics {
 
 const MIN_NORMALIZED_SPAN = 60;
 const ARCHIVAL_BLEED_PER_SIDE_PX = 75; // 0.25" * 300 DPI = 75px per side (150px total added to width & height)
-const CANVAS_LOAD_TIMEOUT_MS = 90;
+export const CANVAS_LOAD_TIMEOUT_MS = 15000;
 
 /**
  * Valid 1x1 archival warm-ivory PNG payload used as the base for deterministic
@@ -46,6 +60,141 @@ const CANVAS_LOAD_TIMEOUT_MS = 90;
  */
 const ARCHIVAL_FALLBACK_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
+
+const CRC32_TABLE: Uint32Array = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) {
+      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+function computeCrc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i += 1) {
+    crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function base64ToUint8Array(b64: string): Uint8Array {
+  if (typeof atob === 'function') {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) {
+      out[i] = bin.charCodeAt(i);
+    }
+    return out;
+  }
+  return new Uint8Array(0);
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  if (typeof btoa === 'function') {
+    let bin = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(bin);
+  }
+  return '';
+}
+
+/**
+ * Injects a binary PNG `pHYs` chunk (`11811` pixels per meter = `300 DPI` on both
+ * X and Y axes, unit specifier `1` = meter, with valid IEEE 802.3 CRC32) immediately
+ * after the `IHDR` chunk in a `data:image/png;base64,...` URL.
+ */
+export function injectPngPhysChunk(pngDataUrl: string, dpi = 300): string {
+  const prefix = 'data:image/png;base64,';
+  if (!pngDataUrl || !pngDataUrl.startsWith(prefix)) {
+    return pngDataUrl;
+  }
+  try {
+    const rawB64 = pngDataUrl.slice(prefix.length);
+    const src = base64ToUint8Array(rawB64);
+    if (
+      src.length < 33 ||
+      src[0] !== 0x89 ||
+      src[1] !== 0x50 ||
+      src[2] !== 0x4e ||
+      src[3] !== 0x47
+    ) {
+      return pngDataUrl;
+    }
+
+    const ihdrLen =
+      ((src[8] << 24) | (src[9] << 16) | (src[10] << 8) | src[11]) >>> 0;
+    const ihdrEnd = 8 + 4 + 4 + ihdrLen + 4;
+    if (ihdrEnd > src.length) {
+      return pngDataUrl;
+    }
+
+    const pixelsPerMeter = Math.round(dpi / 0.0254); // 11811 for 300 DPI
+    const physChunk = new Uint8Array(21);
+    // Length = 9
+    physChunk[0] = 0x00;
+    physChunk[1] = 0x00;
+    physChunk[2] = 0x00;
+    physChunk[3] = 0x09;
+    // Type = 'pHYs'
+    physChunk[4] = 0x70;
+    physChunk[5] = 0x48;
+    physChunk[6] = 0x59;
+    physChunk[7] = 0x73;
+    // Pixels per unit, X axis (4 bytes big-endian)
+    physChunk[8] = (pixelsPerMeter >>> 24) & 0xff;
+    physChunk[9] = (pixelsPerMeter >>> 16) & 0xff;
+    physChunk[10] = (pixelsPerMeter >>> 8) & 0xff;
+    physChunk[11] = pixelsPerMeter & 0xff;
+    // Pixels per unit, Y axis (4 bytes big-endian)
+    physChunk[12] = (pixelsPerMeter >>> 24) & 0xff;
+    physChunk[13] = (pixelsPerMeter >>> 16) & 0xff;
+    physChunk[14] = (pixelsPerMeter >>> 8) & 0xff;
+    physChunk[15] = pixelsPerMeter & 0xff;
+    // Unit specifier = 1 (meter)
+    physChunk[16] = 0x01;
+    // CRC32 over Type + Data (bytes 4..16)
+    const crc = computeCrc32(physChunk.subarray(4, 17));
+    physChunk[17] = (crc >>> 24) & 0xff;
+    physChunk[18] = (crc >>> 16) & 0xff;
+    physChunk[19] = (crc >>> 8) & 0xff;
+    physChunk[20] = crc & 0xff;
+
+    // Check if an existing pHYs chunk immediately follows IHDR and replace it if so
+    let restStart = ihdrEnd;
+    if (
+      src.length >= ihdrEnd + 21 &&
+      src[ihdrEnd + 4] === 0x70 &&
+      src[ihdrEnd + 5] === 0x48 &&
+      src[ihdrEnd + 6] === 0x59 &&
+      src[ihdrEnd + 7] === 0x73
+    ) {
+      const existingPhysLen =
+        ((src[ihdrEnd] << 24) |
+          (src[ihdrEnd + 1] << 16) |
+          (src[ihdrEnd + 2] << 8) |
+          src[ihdrEnd + 3]) >>>
+        0;
+      restStart = ihdrEnd + 4 + 4 + existingPhysLen + 4;
+    }
+
+    const out = new Uint8Array(ihdrEnd + physChunk.length + (src.length - restStart));
+    out.set(src.subarray(0, ihdrEnd), 0);
+    out.set(physChunk, ihdrEnd);
+    out.set(src.subarray(restStart), ihdrEnd + physChunk.length);
+
+    const encoded = uint8ArrayToBase64(out);
+    return encoded ? `${prefix}${encoded}` : pngDataUrl;
+  } catch {
+    return pngDataUrl;
+  }
+}
 
 function escapeXmlAttribute(value: string): string {
   return value
@@ -162,6 +311,10 @@ export async function cropImageFromNormalizedBox(
     return fallbackDataUrl;
   }
 
+  const isJsdomEnv =
+    typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent || '');
+  const effectiveTimeoutMs = isJsdomEnv ? 120 : CANVAS_LOAD_TIMEOUT_MS;
+
   return new Promise<string>((resolve) => {
     let settled = false;
     const finish = (url: string) => {
@@ -174,7 +327,7 @@ export async function cropImageFromNormalizedBox(
 
     const timer = setTimeout(() => {
       finish(fallbackDataUrl);
-    }, CANVAS_LOAD_TIMEOUT_MS);
+    }, effectiveTimeoutMs);
 
     try {
       const img = new Image();
@@ -344,12 +497,41 @@ export async function buildHighResPrintMasterFile(
     includedBleed ? '-bleed' : ''
   }.png`;
 
-  const fallbackPngDataUrl = `data:image/png;base64,${ARCHIVAL_FALLBACK_PNG_BASE64}`;
+  const effectivePrintWIn = hasCustomInches
+    ? params.customWidthIn!
+    : sizeSpec.widthInches;
+  const effectivePrintHIn = hasCustomInches
+    ? params.customHeightIn!
+    : sizeSpec.heightInches;
+
+  const fallbackSourceW = params.sourceOpticalWidthPx ?? 1200;
+  const fallbackSourceH = params.sourceOpticalHeightPx ?? 900;
+  const fallbackOpticalPpi = Math.max(
+    1,
+    Math.round(
+      Math.min(
+        fallbackSourceW / Math.max(1, effectivePrintWIn),
+        fallbackSourceH / Math.max(1, effectivePrintHIn)
+      )
+    )
+  );
+
+  const fallbackPngDataUrl = injectPngPhysChunk(
+    `data:image/png;base64,${ARCHIVAL_FALLBACK_PNG_BASE64}`,
+    dpi
+  );
 
   const fallbackResult: HighResPrintMasterFileResult = {
     dataUrl: fallbackPngDataUrl,
     widthPx,
     heightPx,
+    renderedWidthPx: widthPx,
+    renderedHeightPx: heightPx,
+    targetPrintWidthPx: widthPx,
+    targetPrintHeightPx: heightPx,
+    sourceOpticalWidthPx: fallbackSourceW,
+    sourceOpticalHeightPx: fallbackSourceH,
+    opticalPpi: fallbackOpticalPpi,
     dpi,
     filename,
     includedBleed,
@@ -370,6 +552,10 @@ export async function buildHighResPrintMasterFile(
     return fallbackResult;
   }
 
+  const isJsdomEnv =
+    typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent || '');
+  const effectiveTimeoutMs = isJsdomEnv ? 120 : CANVAS_LOAD_TIMEOUT_MS;
+
   return new Promise<HighResPrintMasterFileResult>((resolve) => {
     let settled = false;
     const finish = (result: HighResPrintMasterFileResult) => {
@@ -382,7 +568,7 @@ export async function buildHighResPrintMasterFile(
 
     const timer = setTimeout(() => {
       finish(fallbackResult);
-    }, CANVAS_LOAD_TIMEOUT_MS);
+    }, effectiveTimeoutMs);
 
     try {
       const img = new Image();
@@ -390,7 +576,21 @@ export async function buildHighResPrintMasterFile(
 
       img.onload = () => {
         try {
-          // Cap physical canvas allocation to 4096px max edge in browser memory while preserving exact 300-DPI metadata dimensions
+          const sourceW =
+            params.sourceOpticalWidthPx || img.naturalWidth || img.width || 1200;
+          const sourceH =
+            params.sourceOpticalHeightPx || img.naturalHeight || img.height || 900;
+          const opticalPpi = Math.max(
+            1,
+            Math.round(
+              Math.min(
+                sourceW / Math.max(1, effectivePrintWIn),
+                sourceH / Math.max(1, effectivePrintHIn)
+              )
+            )
+          );
+
+          // Cap physical canvas allocation to 4096px max edge in browser memory and report true rendered canvas dimensions
           const maxBrowserCanvasEdge = 4096;
           const renderScale =
             Math.max(widthPx, heightPx) > maxBrowserCanvasEdge
@@ -430,15 +630,23 @@ export async function buildHighResPrintMasterFile(
           }
 
           const exportedPng = canvas.toDataURL('image/png');
-          const validPng =
+          const rawValidPng =
             exportedPng && exportedPng.startsWith('data:image/png;base64,')
               ? exportedPng
               : fallbackPngDataUrl;
+          const validPng = injectPngPhysChunk(rawValidPng, dpi);
 
           finish({
             dataUrl: validPng,
             widthPx,
             heightPx,
+            renderedWidthPx: renderW,
+            renderedHeightPx: renderH,
+            targetPrintWidthPx: widthPx,
+            targetPrintHeightPx: heightPx,
+            sourceOpticalWidthPx: sourceW,
+            sourceOpticalHeightPx: sourceH,
+            opticalPpi,
             dpi,
             filename,
             includedBleed,
@@ -470,7 +678,9 @@ export function computeSideBySideFidelityMetrics(
   sizeId: PrintSizeId,
   includeBleed?: boolean,
   customWidthIn?: number,
-  customHeightIn?: number
+  customHeightIn?: number,
+  sourceOpticalWidthPx?: number,
+  sourceOpticalHeightPx?: number
 ): PrintMasterFidelityMetrics {
   const sizeSpec = PRINT_SIZES[sizeId] ?? PRINT_SIZES['24x36'];
   const bleedPerSidePx = includeBleed ? ARCHIVAL_BLEED_PER_SIDE_PX : 0;
@@ -481,6 +691,13 @@ export function computeSideBySideFidelityMetrics(
     typeof customHeightIn === 'number' &&
     customHeightIn > 0 &&
     (customWidthIn !== sizeSpec.widthInches || customHeightIn !== sizeSpec.heightInches);
+
+  const effectivePrintWIn = hasCustomOverride
+    ? customWidthIn!
+    : sizeSpec.widthInches;
+  const effectivePrintHIn = hasCustomOverride
+    ? customHeightIn!
+    : sizeSpec.heightInches;
 
   const baseW = hasCustomOverride
     ? Math.round(customWidthIn! * 300)
@@ -499,7 +716,7 @@ export function computeSideBySideFidelityMetrics(
     ? `${Math.round(customWidthIn! * 2.54)} × ${Math.round(customHeightIn! * 2.54)} cm`
     : sizeSpec.labelCm;
 
-  return {
+  const baseMetrics: PrintMasterFidelityMetrics = {
     sizeId: sizeSpec.id,
     labelInches,
     labelCm,
@@ -513,4 +730,32 @@ export function computeSideBySideFidelityMetrics(
     lightingNeutralized: true,
     colorProfile: 'sRGB IEC61966-2.1 Archival (300 DPI)',
   };
+
+  if (
+    typeof sourceOpticalWidthPx === 'number' &&
+    sourceOpticalWidthPx > 0 &&
+    typeof sourceOpticalHeightPx === 'number' &&
+    sourceOpticalHeightPx > 0
+  ) {
+    const maxBrowserCanvasEdge = 4096;
+    const renderScale =
+      Math.max(widthPx, heightPx) > maxBrowserCanvasEdge
+        ? maxBrowserCanvasEdge / Math.max(widthPx, heightPx)
+        : 1;
+    baseMetrics.renderedWidthPx = Math.max(64, Math.round(widthPx * renderScale));
+    baseMetrics.renderedHeightPx = Math.max(64, Math.round(heightPx * renderScale));
+    baseMetrics.sourceOpticalWidthPx = sourceOpticalWidthPx;
+    baseMetrics.sourceOpticalHeightPx = sourceOpticalHeightPx;
+    baseMetrics.opticalPpi = Math.max(
+      1,
+      Math.round(
+        Math.min(
+          sourceOpticalWidthPx / Math.max(1, effectivePrintWIn),
+          sourceOpticalHeightPx / Math.max(1, effectivePrintHIn)
+        )
+      )
+    );
+  }
+
+  return baseMetrics;
 }

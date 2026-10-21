@@ -606,14 +606,15 @@ describe('Subsystem 1: finerworks-catalog-sync', () => {
         'FW-PO-2026-99'
       );
 
-      // 9. test-credentials
+      // 9. test-credentials (honest false when no credentials configured)
       const credsRes = await handleFinerWorksApiRequest(
         '/api/finerworks/test-credentials',
         'GET',
         {}
       );
       expect(credsRes.statusCode).toBe(200);
-      expect(credsRes.payload.credentials_valid).toBe(true);
+      expect(credsRes.payload.credentials_valid).toBe(false);
+      expect(credsRes.payload.status).toBe('missing-credentials');
 
       // 10. update-branding
       const brandRes = await handleFinerWorksApiRequest(

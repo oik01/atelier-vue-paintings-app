@@ -233,7 +233,7 @@ export const ReimaginedVariationsStrip: React.FC<ReimaginedVariationsStripProps>
                       data-testid={`quick-select-option-pill-${idx}`}
                       aria-pressed={isPillActive}
                       onClick={() => onSelectVariation(v.id)}
-                      className={`min-h-[38px] inline-flex items-center gap-2 rounded-lg border px-3.5 py-1.5 text-xs font-semibold transition-all ${
+                      className={`min-h-[44px] inline-flex items-center gap-2 rounded-lg border px-3.5 py-1.5 text-xs font-semibold transition-all ${
                         isPillActive
                           ? 'border-[#9E5A3C] bg-[#9E5A3C] text-white shadow-xs'
                           : 'border-[#DFD7C8] bg-[#FAF6EE] text-[#1F1C18] hover:border-[#9E5A3C]/50 hover:bg-[#F3EDE0]'

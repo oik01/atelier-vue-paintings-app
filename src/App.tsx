@@ -78,6 +78,9 @@ import {
 } from './subsystems/finerworks-catalog-sync';
 
 export const V2_SESSION_WORKSPACE_KEY = 'atelier_vue_v24_clean_workspace';
+const V2_IDB_DATABASE_NAME = 'atelier_vue_session_idb';
+const V2_IDB_STORE_NAME = 'workspace_sessions';
+const V2_IDB_SESSION_KEY = 'active_workspace';
 
 interface PersistedWorkspaceSession {
   uploadedRoomDataUrl: string | null;
@@ -89,6 +92,88 @@ interface PersistedWorkspaceSession {
   variations: ReimaginedRoomVariation[];
   activeVariationId: string | null;
   selectedMatColorId: MatColorId;
+  customPrintWidthIn?: number;
+  customPrintHeightIn?: number;
+}
+
+function openWorkspaceIdb(): Promise<IDBDatabase | null> {
+  if (typeof window === 'undefined' || typeof window.indexedDB === 'undefined') {
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve) => {
+    try {
+      const request = window.indexedDB.open(V2_IDB_DATABASE_NAME, 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(V2_IDB_STORE_NAME)) {
+          db.createObjectStore(V2_IDB_STORE_NAME);
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function saveWorkspaceSessionToIdb(
+  session: PersistedWorkspaceSession
+): Promise<void> {
+  const db = await openWorkspaceIdb();
+  if (!db) return;
+  try {
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(V2_IDB_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(V2_IDB_STORE_NAME);
+      store.put(session, V2_IDB_SESSION_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  } catch {
+    // Ignore IDB write restrictions
+  } finally {
+    db.close();
+  }
+}
+
+async function loadWorkspaceSessionFromIdb(): Promise<PersistedWorkspaceSession | null> {
+  const db = await openWorkspaceIdb();
+  if (!db) return null;
+  try {
+    return await new Promise<PersistedWorkspaceSession | null>((resolve) => {
+      const tx = db.transaction(V2_IDB_STORE_NAME, 'readonly');
+      const store = tx.objectStore(V2_IDB_STORE_NAME);
+      const req = store.get(V2_IDB_SESSION_KEY);
+      req.onsuccess = () => {
+        const val = req.result as PersistedWorkspaceSession | undefined;
+        resolve(val && typeof val === 'object' ? val : null);
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
+async function clearWorkspaceSessionIdb(): Promise<void> {
+  const db = await openWorkspaceIdb();
+  if (!db) return;
+  try {
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(V2_IDB_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(V2_IDB_STORE_NAME);
+      store.delete(V2_IDB_SESSION_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  } catch {
+    // Ignore IDB delete restrictions
+  } finally {
+    db.close();
+  }
 }
 
 function cloneDefaultScaleQuestions(): ScaleCalibrationQuestion[] {
@@ -135,6 +220,14 @@ function loadWorkspaceSession(skipStorage: boolean): PersistedWorkspaceSession |
         parsed.selectedMatColorId === 'charcoal-conservation'
           ? parsed.selectedMatColorId
           : 'archival-ivory',
+      customPrintWidthIn:
+        typeof parsed.customPrintWidthIn === 'number'
+          ? parsed.customPrintWidthIn
+          : undefined,
+      customPrintHeightIn:
+        typeof parsed.customPrintHeightIn === 'number'
+          ? parsed.customPrintHeightIn
+          : undefined,
     };
   } catch {
     return null;
@@ -145,7 +238,13 @@ function saveWorkspaceSession(
   session: PersistedWorkspaceSession,
   skipStorage: boolean
 ): void {
-  if (skipStorage || typeof window === 'undefined' || !window.localStorage) {
+  if (skipStorage || typeof window === 'undefined') {
+    return;
+  }
+  // Always persist the full session (including multi-MB base64 data URLs) to IndexedDB
+  void saveWorkspaceSessionToIdb(session);
+
+  if (!window.localStorage) {
     return;
   }
   try {
@@ -178,7 +277,27 @@ function saveWorkspaceSession(
           })
         );
       } catch {
-        // Ignore storage quota restrictions
+        // Quota exceeded even with 1 variation — persist lightweight metadata in localStorage while IndexedDB holds full blobs
+        try {
+          window.localStorage.setItem(
+            V2_SESSION_WORKSPACE_KEY,
+            JSON.stringify({
+              uploadedRoomDataUrl: null,
+              uploadedRoomTitle: session.uploadedRoomTitle,
+              roomAngles: [],
+              promptConfig: session.promptConfig,
+              scaleQuestions: session.scaleQuestions,
+              hasAppliedScaleMeasurements: session.hasAppliedScaleMeasurements,
+              variations: [],
+              activeVariationId: session.activeVariationId,
+              selectedMatColorId: session.selectedMatColorId,
+              customPrintWidthIn: session.customPrintWidthIn,
+              customPrintHeightIn: session.customPrintHeightIn,
+            })
+          );
+        } catch {
+          // Ignore storage quota restrictions
+        }
       }
     }
   }
@@ -247,6 +366,7 @@ export const App: React.FC<AppProps> = ({
         } catch {
           // Ignore storage errors
         }
+        void clearWorkspaceSessionIdb();
         clearAtelierV2State();
         try {
           window.history.replaceState({}, '', window.location.pathname);
@@ -400,13 +520,62 @@ export const App: React.FC<AppProps> = ({
   const [selectedGlazingId, setSelectedGlazingId] =
     useState<FinerWorksGlazingId>('clear-acrylic');
   const [customPrintWidthIn, setCustomPrintWidthIn] = useState<number | undefined>(
-    undefined
+    () => initialHydration.session?.customPrintWidthIn
   );
   const [customPrintHeightIn, setCustomPrintHeightIn] = useState<number | undefined>(
-    undefined
+    () => initialHydration.session?.customPrintHeightIn
   );
+  const [selectedOrientation, setSelectedOrientation] = useState<
+    'landscape' | 'portrait' | 'square'
+  >(() => initialHydration.session?.promptConfig?.orientation ?? 'portrait');
   const [isBrandAndSyncModalOpen, setIsBrandAndSyncModalOpen] =
     useState<boolean>(false);
+
+  // Sync selectedOrientation whenever promptConfig.orientation changes
+  useEffect(() => {
+    if (promptConfig.orientation) {
+      setSelectedOrientation(promptConfig.orientation);
+    }
+  }, [promptConfig.orientation]);
+
+  // Hydrate heavy variations & roomAngles from IndexedDB when localStorage hit quota
+  useEffect(() => {
+    if (skipLocalStorageLoad || initialVariations) return;
+    if (
+      typeof window === 'undefined' ||
+      !window.localStorage?.getItem(V2_SESSION_WORKSPACE_KEY)
+    ) {
+      return;
+    }
+    if (variations.length > 0) return;
+
+    let cancelled = false;
+    void loadWorkspaceSessionFromIdb().then((idbSession) => {
+      if (cancelled || !idbSession) return;
+      if (idbSession.uploadedRoomDataUrl) {
+        setUploadedRoomDataUrl((prev) => prev ?? idbSession.uploadedRoomDataUrl);
+      }
+      if (idbSession.roomAngles && idbSession.roomAngles.length > 0) {
+        setRoomAngles((prev) =>
+          prev.length > 0 ? prev : idbSession.roomAngles!
+        );
+      }
+      if (idbSession.variations && idbSession.variations.length > 0) {
+        setVariations((prev) => {
+          if (prev.length > 0) return prev;
+          setActiveVariationId(
+            idbSession.activeVariationId ??
+              idbSession.variations[idbSession.variations.length - 1].id
+          );
+          setActivePage('page-4-gallery');
+          return idbSession.variations;
+        });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [skipLocalStorageLoad, initialVariations, variations.length]);
 
   useEffect(() => {
     const stopDaemon = startFinerWorksAutoSyncDaemon(undefined, (updatedSnapshot) => {
@@ -642,6 +811,8 @@ export const App: React.FC<AppProps> = ({
         variations,
         activeVariationId,
         selectedMatColorId,
+        customPrintWidthIn,
+        customPrintHeightIn,
       },
       skipLocalStorageLoad
     );
@@ -655,6 +826,8 @@ export const App: React.FC<AppProps> = ({
     variations,
     activeVariationId,
     selectedMatColorId,
+    customPrintWidthIn,
+    customPrintHeightIn,
     skipLocalStorageLoad,
   ]);
 
@@ -836,6 +1009,7 @@ export const App: React.FC<AppProps> = ({
     setGenerationStage('idle');
     setErrorMessage(null);
     setActivePage('page-1-space');
+    void clearWorkspaceSessionIdb();
     if (typeof window !== 'undefined' && window.localStorage) {
       try {
         window.localStorage.removeItem(V2_SESSION_WORKSPACE_KEY);
@@ -1308,6 +1482,14 @@ export const App: React.FC<AppProps> = ({
     []
   );
 
+  const handleSelectOrientation = useCallback(
+    (nextOrientation: 'landscape' | 'portrait' | 'square') => {
+      setSelectedOrientation(nextOrientation);
+      handleUpdatePromptConfig({ orientation: nextOrientation });
+    },
+    [handleUpdatePromptConfig]
+  );
+
   const handleSelectFrame = useCallback(
     (frameId: FrameProfileId) => {
       setSelectedFrameId(frameId);
@@ -1485,7 +1667,7 @@ export const App: React.FC<AppProps> = ({
                   type="button"
                   data-testid="open-brand-and-sync-modal-btn"
                   onClick={() => setIsBrandAndSyncModalOpen(true)}
-                  className="inline-flex min-h-[36px] items-center justify-center gap-1.5 rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] px-2.5 py-1 text-[11px] sm:text-xs font-semibold text-[#1F1C18] transition-colors hover:border-[#2E4A3E] hover:text-[#2E4A3E] whitespace-nowrap"
+                  className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] px-2.5 py-1 text-[11px] sm:text-xs font-semibold text-[#1F1C18] transition-colors hover:border-[#2E4A3E] hover:text-[#2E4A3E] whitespace-nowrap"
                 >
                   <span className="h-2 w-2 shrink-0 rounded-full bg-[#2E4A3E]" />
                   <span>Brand &amp; Archival Studio</span>
@@ -1507,7 +1689,7 @@ export const App: React.FC<AppProps> = ({
                     type="button"
                     data-testid="reset-workspace-btn"
                     onClick={handleResetWorkspace}
-                    className="inline-flex min-h-[36px] items-center justify-center rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] px-2.5 py-1 text-[11px] sm:text-xs font-semibold text-[#4A3B32] transition-colors hover:border-[#9E5A3C] hover:text-[#9E5A3C] whitespace-nowrap"
+                    className="inline-flex min-h-[44px] items-center justify-center rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] px-2.5 py-1 text-[11px] sm:text-xs font-semibold text-[#4A3B32] transition-colors hover:border-[#9E5A3C] hover:text-[#9E5A3C] whitespace-nowrap"
                   >
                     Start Fresh
                   </button>
@@ -1519,7 +1701,7 @@ export const App: React.FC<AppProps> = ({
                       type="button"
                       data-testid="header-open-acquire-modal-btn"
                       onClick={() => handleOpenAcquireModal('order-print')}
-                      className="inline-flex min-h-[36px] items-center justify-center gap-1.5 rounded-xl bg-[#1F1C18] px-3 py-1 text-[11px] sm:text-xs font-semibold text-[#FAF6EE] shadow-xs transition-colors hover:bg-[#9E5A3C] whitespace-nowrap"
+                      className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl bg-[#1F1C18] px-3 py-1 text-[11px] sm:text-xs font-semibold text-[#FAF6EE] shadow-xs transition-colors hover:bg-[#9E5A3C] whitespace-nowrap"
                     >
                       <span>Download / Order Print</span>
                     </button>
@@ -1529,6 +1711,7 @@ export const App: React.FC<AppProps> = ({
                       onClick={() => handleOpenAcquireModal('order-print')}
                       className="sr-only"
                       tabIndex={-1}
+                      aria-hidden="true"
                     >
                       Download or Order Print
                     </button>
@@ -1648,6 +1831,7 @@ export const App: React.FC<AppProps> = ({
               onClick={() => setActivePage('page-3-creating')}
               className="sr-only"
               tabIndex={-1}
+              aria-hidden="true"
             >
               03 Atelier Creation Progress
             </button>
@@ -1723,7 +1907,7 @@ export const App: React.FC<AppProps> = ({
               <button
                 type="button"
                 onClick={() => setActivePage('page-1-space')}
-                className="min-h-[40px] rounded-xl border border-[#DFD7C8] bg-[#F5F0E6] px-3.5 py-1.5 text-xs font-semibold text-[#4A3B32] transition-colors hover:border-[#9E5A3C] hover:text-[#9E5A3C]"
+                className="min-h-[44px] rounded-xl border border-[#DFD7C8] bg-[#F5F0E6] px-3.5 py-1.5 text-xs font-semibold text-[#4A3B32] transition-colors hover:border-[#9E5A3C] hover:text-[#9E5A3C]"
               >
                 Edit Space Photos ({displayedAnglesSummary.length})
               </button>
@@ -1782,7 +1966,7 @@ export const App: React.FC<AppProps> = ({
                   type="button"
                   data-testid="back-to-curation-btn"
                   onClick={() => setActivePage('page-2-curation')}
-                  className="min-h-[40px] inline-flex items-center gap-1.5 rounded-xl border border-[#C9BFA8] bg-[#F5F0E6] px-3.5 py-1.5 text-xs font-semibold text-[#1F1C18] transition-colors hover:border-[#9E5A3C] hover:text-[#9E5A3C]"
+                  className="min-h-[44px] inline-flex items-center gap-1.5 rounded-xl border border-[#C9BFA8] bg-[#F5F0E6] px-3.5 py-1.5 text-xs font-semibold text-[#1F1C18] transition-colors hover:border-[#9E5A3C] hover:text-[#9E5A3C]"
                 >
                   ← Adjust Vision &amp; Style
                 </button>
@@ -1790,7 +1974,7 @@ export const App: React.FC<AppProps> = ({
                   type="button"
                   data-testid="back-to-space-from-gallery-btn"
                   onClick={() => setActivePage('page-1-space')}
-                  className="min-h-[40px] inline-flex items-center gap-1.5 rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] px-3.5 py-1.5 text-xs font-medium text-[#4A3B32] transition-colors hover:border-[#9E5A3C] hover:text-[#1F1C18]"
+                  className="min-h-[44px] inline-flex items-center gap-1.5 rounded-xl border border-[#DFD7C8] bg-[#FAF6EE] px-3.5 py-1.5 text-xs font-medium text-[#4A3B32] transition-colors hover:border-[#9E5A3C] hover:text-[#1F1C18]"
                 >
                   ← Space Photos ({activeVariation.viewpoints?.length ?? 1})
                 </button>
@@ -1822,7 +2006,7 @@ export const App: React.FC<AppProps> = ({
               className="space-y-6"
             >
               {/* Visually hidden legacy variations strip (kept in DOM for test compatibility while all options are consolidated into the single large swipeable stage below) */}
-              <div className="sr-only">
+              <div className="sr-only" aria-hidden="true" tabIndex={-1}>
                 <ReimaginedVariationsStrip
                   variations={variations}
                   activeVariationId={activeVariation.id}
@@ -1867,6 +2051,8 @@ export const App: React.FC<AppProps> = ({
                 selectedMatColorId={selectedMatColorId}
                 selectedMediaId={selectedMediaId}
                 selectedGlazingId={selectedGlazingId}
+                selectedOrientation={selectedOrientation}
+                onSelectOrientation={handleSelectOrientation}
                 customPrintWidthIn={customPrintWidthIn}
                 customPrintHeightIn={customPrintHeightIn}
                 includeBleed={includeBleed}
@@ -1884,6 +2070,8 @@ export const App: React.FC<AppProps> = ({
                 onChangeCustomDimensions={handleChangeCustomDimensions}
                 onToggleBleed={handleToggleBleed}
                 onDirectDownloadPrint={handleDirectDownloadPrint}
+                hasUnlockedDigitalMaster={orders.length > 0}
+                onOpenDownloadLicenseModal={() => handleOpenAcquireModal('download-master')}
                 onOpenPrintOrderModal={() => handleOpenAcquireModal('order-print')}
               />
             </div>
@@ -1988,6 +2176,7 @@ export const App: React.FC<AppProps> = ({
         matWidthId={selectedMatWidthId}
         matColorId={selectedMatColorId}
         substrateId={selectedSubstrateId}
+        orientation={selectedOrientation}
         mediaId={selectedMediaId}
         glazingId={selectedGlazingId}
         customWidthIn={customPrintWidthIn}

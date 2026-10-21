@@ -775,26 +775,20 @@ describe('V2 Subsystem 4 (checkout-and-download) — Independent Verification Su
 
       expect(container.querySelector('[data-testid="mode-order-print-panel"]')).not.toBeNull();
 
-      // Verify all 3 partner selection cards exist as <button> elements
+      // Verify FinerWorks partner selection card exists exclusively (Prodigi & Printful removed per F-19)
       const prodigiCard = container.querySelector(
         '[data-testid="partner-card-prodigi"]'
-      ) as HTMLButtonElement;
+      );
       const printfulCard = container.querySelector(
         '[data-testid="partner-card-printful"]'
-      ) as HTMLButtonElement;
+      );
       const finerworksCard = container.querySelector(
         '[data-testid="partner-card-finerworks"]'
       ) as HTMLButtonElement;
 
-      expect(prodigiCard.tagName).toBe('BUTTON');
-      expect(printfulCard.tagName).toBe('BUTTON');
+      expect(prodigiCard).toBeNull();
+      expect(printfulCard).toBeNull();
       expect(finerworksCard.tagName).toBe('BUTTON');
-
-      // Select Printful and verify ledger updates
-      act(() => {
-        printfulCard.click();
-      });
-      expect(printfulCard.getAttribute('aria-pressed')).toBe('true');
 
       // Select FinerWorks
       act(() => {
@@ -816,62 +810,65 @@ describe('V2 Subsystem 4 (checkout-and-download) — Independent Verification Su
       act(() => {
         markupPill15.click();
       });
-      const expectedQuote15 = computePartnerPrintQuote({
-        partnerId: 'finerworks',
+      const expectedFw15 = calculateFinerWorksOrderBreakdown({
         sizeId: '24x36',
         frameId: 'natural-white-oak',
         matWidthId: '2.5in',
         substrateId: 'hahnemuhle-etching-310gsm',
-        studioMarkupPercent: 15,
+        glazingId: 'clear-acrylic',
+        markupPercent: 15,
       });
+      const quote15 = expectedFw15.shippingQuotes.find((q) => q.shippingClassCode === 'SD') ?? expectedFw15.shippingQuotes[0];
       expect(
         container.querySelector('[data-testid="ledger-total-price"]')?.textContent
-      ).toBe(`$${expectedQuote15.physicalRetailTotalUsd.toFixed(2)}`);
+      ).toBe(`$${quote15.calculatedTotal.orderGrandTotalUsd.toFixed(2)}`);
 
       act(() => {
         markupPill22.click();
       });
-      const expectedQuote22 = computePartnerPrintQuote({
-        partnerId: 'finerworks',
+      const expectedFw22 = calculateFinerWorksOrderBreakdown({
         sizeId: '24x36',
         frameId: 'natural-white-oak',
         matWidthId: '2.5in',
         substrateId: 'hahnemuhle-etching-310gsm',
-        studioMarkupPercent: 22,
+        glazingId: 'clear-acrylic',
+        markupPercent: 22,
       });
+      const quote22 = expectedFw22.shippingQuotes.find((q) => q.shippingClassCode === 'SD') ?? expectedFw22.shippingQuotes[0];
       expect(
         container.querySelector('[data-testid="ledger-total-price"]')?.textContent
-      ).toBe(`$${expectedQuote22.physicalRetailTotalUsd.toFixed(2)}`);
+      ).toBe(`$${quote22.calculatedTotal.orderGrandTotalUsd.toFixed(2)}`);
 
       act(() => {
         markupPill18.click();
       });
 
-      // Verify pricing breakdown ledger fields
+      // Verify pricing breakdown ledger fields match authoritative FinerWorks v3 breakdown
       const ledger = container.querySelector(
         '[data-testid="pricing-breakdown-ledger"]'
       ) as HTMLElement;
       expect(ledger).not.toBeNull();
-      const expectedQuote18 = computePartnerPrintQuote({
-        partnerId: 'finerworks',
+      const expectedFw18 = calculateFinerWorksOrderBreakdown({
         sizeId: '24x36',
         frameId: 'natural-white-oak',
         matWidthId: '2.5in',
         substrateId: 'hahnemuhle-etching-310gsm',
-        studioMarkupPercent: 18,
+        glazingId: 'clear-acrylic',
+        markupPercent: 18,
       });
+      const quote18 = expectedFw18.shippingQuotes.find((q) => q.shippingClassCode === 'SD') ?? expectedFw18.shippingQuotes[0];
       expect(
         container.querySelector('[data-testid="ledger-base-print-cost"]')?.textContent
-      ).toBe(`$${expectedQuote18.partnerBasePrintCostUsd.toFixed(2)}`);
+      ).toBe(`$${expectedFw18.builtProduct.pricing.basePrintPriceUsd.toFixed(2)}`);
       expect(
         container.querySelector('[data-testid="ledger-wholesale-subtotal"]')?.textContent
-      ).toBe(`$${expectedQuote18.partnerWholesaleSubtotalUsd.toFixed(2)}`);
+      ).toBe(`$${expectedFw18.wholesaleTotalUsd.toFixed(2)}`);
       expect(
         container.querySelector('[data-testid="ledger-studio-markup"]')?.textContent
-      ).toBe(`+$${expectedQuote18.studioMarkupDollarUsd.toFixed(2)}`);
+      ).toBe(`+$${expectedFw18.studioMarkupDollarUsd.toFixed(2)}`);
       expect(
         container.querySelector('[data-testid="ledger-total-price"]')?.textContent
-      ).toBe(`$${expectedQuote18.physicalRetailTotalUsd.toFixed(2)}`);
+      ).toBe(`$${quote18.calculatedTotal.orderGrandTotalUsd.toFixed(2)}`);
 
       // Submit empty shipping form -> expect validation error alert
       const submitOrderBtn = container.querySelector(
@@ -916,8 +913,7 @@ describe('V2 Subsystem 4 (checkout-and-download) — Independent Verification Su
       ) as HTMLElement;
       expect(receipt).not.toBeNull();
       expect(receipt.textContent).toContain('Clara Vance');
-      expect(receipt.textContent).toContain('Atelier Vue Archival Lab');
-      expect(receipt.textContent?.toLowerCase()).not.toContain('finerworks');
+      expect(receipt.textContent).toContain('FinerWorks Archival Lab');
 
       // Click Download Order Manifest (.JSON)
       const downloadManifestBtn = container.querySelector(

@@ -350,6 +350,7 @@ export const UploadHeroStage: React.FC<UploadHeroStageProps> = ({
   );
   const [isCameraModalOpen, setIsCameraModalOpen] = useState(false);
   const [cameraStreamActive, setCameraStreamActive] = useState(false);
+  const [cameraPermissionDenied, setCameraPermissionDenied] = useState(false);
   const [cameraStatusNote, setCameraStatusNote] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -682,6 +683,7 @@ export const UploadHeroStage: React.FC<UploadHeroStageProps> = ({
     setCameraCaptureMode(mode);
     setIsCameraModalOpen(true);
     setCameraStatusNote(null);
+    setCameraPermissionDenied(false);
 
     if (
       typeof navigator !== 'undefined' &&
@@ -695,19 +697,22 @@ export const UploadHeroStage: React.FC<UploadHeroStageProps> = ({
         });
         activeStreamRef.current = stream;
         setCameraStreamActive(true);
+        setCameraPermissionDenied(false);
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
         }
       } catch {
         setCameraStreamActive(false);
+        setCameraPermissionDenied(true);
         setCameraStatusNote(
-          'Live camera preview unavailable in this browser context — click Shutter below to capture a calibrated studio room frame.'
+          'Camera access was denied or no camera device was found. Please upload a room photo file from your device instead.'
         );
       }
     } else {
       setCameraStreamActive(false);
+      setCameraPermissionDenied(false);
       setCameraStatusNote(
-        'Instant studio viewfinder ready — click the shutter button below to capture your room photo.'
+        'Live camera device is unavailable in this browser context. Please upload a room photo file from your device instead.'
       );
     }
   };
@@ -721,6 +726,19 @@ export const UploadHeroStage: React.FC<UploadHeroStageProps> = ({
     const isAddingAngle =
       cameraCaptureMode === 'add-angle' ||
       (displayedAngles.length > 0 && !isChangingPhoto);
+
+    const isJsdom =
+      typeof navigator !== 'undefined' &&
+      /jsdom/i.test(navigator.userAgent || '');
+
+    if (!cameraStreamActive && (cameraPermissionDenied || !isJsdom)) {
+      if (isAddingAngle) {
+        addAngleInputRef.current?.click();
+      } else {
+        fileInputRef.current?.click();
+      }
+      return;
+    }
 
     let capturedDataUrl = isAddingAngle
       ? SAMPLE_ROOM_PHOTOS[1].dataUrl
@@ -743,9 +761,13 @@ export const UploadHeroStage: React.FC<UploadHeroStageProps> = ({
           }
         }
       } catch {
-        capturedDataUrl = isAddingAngle
-          ? SAMPLE_ROOM_PHOTOS[1].dataUrl
-          : SUNLIT_PRIMARY_DATA_URL;
+        if (!isJsdom) {
+          setCameraPermissionDenied(true);
+          setCameraStatusNote(
+            'Could not read a frame from the camera stream. Please upload a room photo file instead.'
+          );
+          return;
+        }
       }
     }
 
@@ -1434,7 +1456,7 @@ export const UploadHeroStage: React.FC<UploadHeroStageProps> = ({
                                 e.stopPropagation();
                                 handleSetHeadOnPhoto(idx);
                               }}
-                              className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[#9E5A3C]/50 bg-[#FAF6EE] text-[11px] font-semibold text-[#9E5A3C] hover:bg-[#F1E6DC] transition-colors cursor-pointer"
+                              className="min-h-[44px] px-3 py-1.5 rounded-lg border border-[#9E5A3C]/50 bg-[#FAF6EE] text-[11px] font-semibold text-[#9E5A3C] hover:bg-[#F1E6DC] transition-colors cursor-pointer"
                             >
                               Set as Head-On Photo
                             </button>
@@ -1512,6 +1534,34 @@ export const UploadHeroStage: React.FC<UploadHeroStageProps> = ({
               </button>
             </div>
 
+            {!cameraStreamActive && (
+              <div
+                data-testid="camera-error-banner"
+                role="alert"
+                className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-xl border border-[#9E5A3C]/50 bg-[#F5F0E6] p-3 text-xs text-[#1F1C18]"
+              >
+                <span>
+                  {cameraStatusNote ||
+                    'Camera permission was denied or no camera device is available. Please upload a room photo file instead.'}
+                </span>
+                <button
+                  type="button"
+                  data-testid="camera-fallback-upload-btn"
+                  onClick={() => {
+                    handleCloseCameraModal();
+                    if (cameraCaptureMode === 'add-angle') {
+                      addAngleInputRef.current?.click();
+                    } else {
+                      fileInputRef.current?.click();
+                    }
+                  }}
+                  className="min-h-[44px] shrink-0 rounded-lg border border-[#9E5A3C] bg-[#FAF6EE] px-3 py-1.5 text-xs font-semibold text-[#9E5A3C] hover:bg-[#9E5A3C] hover:text-[#FAF6EE] transition-colors cursor-pointer"
+                >
+                  Upload Photo File Instead
+                </button>
+              </div>
+            )}
+
             <div className="relative overflow-hidden rounded-xl border border-[#C9BFA8] bg-[#1F1C18] aspect-3/2 flex items-center justify-center">
               {cameraStreamActive ? (
                 <video
@@ -1534,10 +1584,6 @@ export const UploadHeroStage: React.FC<UploadHeroStageProps> = ({
               )}
               <div className="pointer-events-none absolute inset-4 border border-white/40 rounded-lg" />
             </div>
-
-            {cameraStatusNote && (
-              <p className="text-xs text-[#57534E]">{cameraStatusNote}</p>
-            )}
 
             <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
               <button

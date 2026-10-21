@@ -154,9 +154,21 @@ export interface PrintSizeSpec {
   heightInches: number;
   printMasterWidthPx: number; // @ 300 DPI (or scaled high-res master)
   printMasterHeightPx: number;
+  optimal300PpiWidthPx?: number;
+  optimal300PpiHeightPx?: number;
   dpi: number;
   scaleDescription: string;
 }
+
+export const DIGITAL_MASTER_LICENSE_USD = 29;
+
+export const FINERWORKS_SIZE_OPTIONS: PrintSizeId[] = [
+  '12x16',
+  '18x24',
+  '24x36',
+  '30x40',
+  '36x48',
+];
 
 export interface FrameProfileSpec {
   id: FrameProfileId;
@@ -296,6 +308,8 @@ export const PRINT_SIZES: Record<PrintSizeId, PrintSizeSpec> = {
     heightInches: 16,
     printMasterWidthPx: 1800,
     printMasterHeightPx: 2400,
+    optimal300PpiWidthPx: 3600,
+    optimal300PpiHeightPx: 4800,
     dpi: 300,
     scaleDescription: 'Intimate Study',
   },
@@ -307,6 +321,8 @@ export const PRINT_SIZES: Record<PrintSizeId, PrintSizeSpec> = {
     heightInches: 24,
     printMasterWidthPx: 2100,
     printMasterHeightPx: 2800,
+    optimal300PpiWidthPx: 5400,
+    optimal300PpiHeightPx: 7200,
     dpi: 300,
     scaleDescription: 'Gallery Standard',
   },
@@ -318,6 +334,8 @@ export const PRINT_SIZES: Record<PrintSizeId, PrintSizeSpec> = {
     heightInches: 36,
     printMasterWidthPx: 2400,
     printMasterHeightPx: 3600,
+    optimal300PpiWidthPx: 7200,
+    optimal300PpiHeightPx: 10800,
     dpi: 300,
     scaleDescription: 'Statement Focal Piece',
   },
@@ -329,6 +347,8 @@ export const PRINT_SIZES: Record<PrintSizeId, PrintSizeSpec> = {
     heightInches: 40,
     printMasterWidthPx: 2700,
     printMasterHeightPx: 3600,
+    optimal300PpiWidthPx: 9000,
+    optimal300PpiHeightPx: 12000,
     dpi: 300,
     scaleDescription: 'Grand Salon Scale',
   },
@@ -340,8 +360,44 @@ export const PRINT_SIZES: Record<PrintSizeId, PrintSizeSpec> = {
     heightInches: 48,
     printMasterWidthPx: 3000,
     printMasterHeightPx: 4000,
+    optimal300PpiWidthPx: 10800,
+    optimal300PpiHeightPx: 14400,
     dpi: 300,
     scaleDescription: 'Architectural Collector Scale',
+  },
+};
+
+export const MAT_WIDTHS: Record<
+  MatWidthId,
+  { id: MatWidthId; label: string; inches: number; priceAddUsd: number }
+> = {
+  none: { id: 'none', label: 'No Mat', inches: 0, priceAddUsd: 0 },
+  '1.5in': { id: '1.5in', label: '1.5" Gallery Mat', inches: 1.5, priceAddUsd: 24 },
+  '2.5in': { id: '2.5in', label: '2.5" Museum Mat', inches: 2.5, priceAddUsd: 38 },
+  '3.5in': { id: '3.5in', label: '3.5" Salon Mat', inches: 3.5, priceAddUsd: 54 },
+};
+
+export const MAT_COLORS: Record<
+  MatColorId,
+  { id: MatColorId; label: string; hex: string; bevelHex: string }
+> = {
+  'archival-ivory': {
+    id: 'archival-ivory',
+    label: 'Archival Ivory',
+    hex: '#FAF6EE',
+    bevelHex: '#DFD7C8',
+  },
+  'warm-museum-linen': {
+    id: 'warm-museum-linen',
+    label: 'Warm Museum Linen',
+    hex: '#F5F0E6',
+    bevelHex: '#D5CBB8',
+  },
+  'charcoal-conservation': {
+    id: 'charcoal-conservation',
+    label: 'Charcoal Conservation',
+    hex: '#1F1C18',
+    bevelHex: '#4A3B32',
   },
 };
 
@@ -541,6 +597,7 @@ export interface RoomAngleAsset {
 
 export interface RoomPreservationVerification {
   passed: boolean;
+  skipped?: boolean;
   furniturePreserved: boolean;
   roomDimensionsPreserved: boolean;
   onlyArtChanged: boolean;
@@ -676,6 +733,10 @@ export interface AiPromptConfiguration {
   additionalUserDetails?: string; // User-typed additional details (internal prompt stays hidden)
   editablePromptText: string; // Internal compiled prompt (not shown as raw prompt in UI)
   isPromptManuallyEdited: boolean;
+  orientation?: 'landscape' | 'portrait' | 'square';
+  colorPalette?: string;
+  mood?: string;
+  lighting?: string;
   finerworksConstraints?: FinerWorksPromptConstraintConfig;
 }
 

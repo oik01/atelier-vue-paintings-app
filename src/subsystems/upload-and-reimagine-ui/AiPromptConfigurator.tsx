@@ -298,13 +298,30 @@ export function composeDefaultUiPrompt(config: ComposeUiPromptInput): string {
     finerworksDirective = `Archival Locked Edition Constraints: Substrate MediaID ${lockedMediaId} (${media.shortName}), Frame ${lockedFrameId}, Mat ${lockedMatWidthId}, Target Size ${lockedSizeId}.`;
   }
 
+  const orientationDirective = config.orientation
+    ? `Canvas Orientation: ${config.orientation}.`
+    : '';
+  const colorPaletteDirective = config.colorPalette?.trim()
+    ? `Color Palette: ${config.colorPalette.trim()}.`
+    : '';
+  const moodDirective = config.mood?.trim()
+    ? `Curated Mood: ${config.mood.trim()}.`
+    : '';
+  const lightingDirective = config.lighting?.trim()
+    ? `Lighting Direction: ${config.lighting.trim()}.`
+    : '';
+
   return [
     `[AI Engine: ${engineLabel}] Reimagine this exact room photo with museum-grade framed wall art.`,
     'Curatorial Thinking Protocol: First analyze the style of furniture, the location of the space, and the color palette of the room before determining an appropriate piece of art that will look good.',
     `Wall Placement Action: ${placementDirective}`,
     pieceCountDirective,
     locationDirective,
+    orientationDirective,
     `Art Style Direction: ${styleDirective}`,
+    colorPaletteDirective,
+    moodDirective,
+    lightingDirective,
     additionalDetailsDirective,
     finerworksDirective,
     'STRICT PRESERVATION RULE: Do NOT remove, move, hide, resize, or alter any pre-existing furniture (sofas, chairs, tables, lamps, rugs, plants, curtains, pillows, decor) or room dimensions, walls, windows, or camera perspective. Confirm before output that ONLY the wall art has changed.',
@@ -327,6 +344,10 @@ export function createInitialPromptConfiguration(
   const additionalUserDetails: string = overrides?.additionalUserDetails ?? '';
   const isPromptManuallyEdited: boolean = overrides?.isPromptManuallyEdited ?? false;
   const finerworksConstraints = overrides?.finerworksConstraints;
+  const orientation = overrides?.orientation;
+  const colorPalette = overrides?.colorPalette;
+  const mood = overrides?.mood;
+  const lighting = overrides?.lighting;
 
   const editablePromptText =
     overrides?.editablePromptText !== undefined
@@ -340,6 +361,10 @@ export function createInitialPromptConfiguration(
           stylePreset,
           customStyleNote,
           additionalUserDetails,
+          ...(orientation !== undefined ? { orientation } : {}),
+          ...(colorPalette !== undefined ? { colorPalette } : {}),
+          ...(mood !== undefined ? { mood } : {}),
+          ...(lighting !== undefined ? { lighting } : {}),
           ...(finerworksConstraints !== undefined
             ? { finerworksConstraints }
             : {}),
@@ -356,6 +381,10 @@ export function createInitialPromptConfiguration(
     additionalUserDetails,
     editablePromptText,
     isPromptManuallyEdited,
+    ...(orientation !== undefined ? { orientation } : {}),
+    ...(colorPalette !== undefined ? { colorPalette } : {}),
+    ...(mood !== undefined ? { mood } : {}),
+    ...(lighting !== undefined ? { lighting } : {}),
     ...(finerworksConstraints !== undefined
       ? { finerworksConstraints }
       : {}),
@@ -514,6 +543,10 @@ export const AiPromptConfigurator: React.FC<AiPromptConfiguratorProps> = ({
   ) => {
     const nextFinerworksConstraints =
       partial.finerworksConstraints ?? config.finerworksConstraints;
+    const nextOrientation = partial.orientation ?? config.orientation;
+    const nextColorPalette = partial.colorPalette ?? config.colorPalette;
+    const nextMood = partial.mood ?? config.mood;
+    const nextLighting = partial.lighting ?? config.lighting;
     const nextCore = {
       engineId: partial.engineId ?? config.engineId,
       placementAction: partial.placementAction ?? config.placementAction,
@@ -526,6 +559,10 @@ export const AiPromptConfigurator: React.FC<AiPromptConfiguratorProps> = ({
       customStyleNote: partial.customStyleNote ?? config.customStyleNote ?? '',
       additionalUserDetails:
         partial.additionalUserDetails ?? config.additionalUserDetails ?? '',
+      ...(nextOrientation !== undefined ? { orientation: nextOrientation } : {}),
+      ...(nextColorPalette !== undefined ? { colorPalette: nextColorPalette } : {}),
+      ...(nextMood !== undefined ? { mood: nextMood } : {}),
+      ...(nextLighting !== undefined ? { lighting: nextLighting } : {}),
       ...(nextFinerworksConstraints !== undefined
         ? { finerworksConstraints: nextFinerworksConstraints }
         : {}),
@@ -882,6 +919,45 @@ export const AiPromptConfigurator: React.FC<AiPromptConfiguratorProps> = ({
                     </button>
                   );
                 })}
+              </div>
+
+              <div
+                data-testid="curation-orientation-selector"
+                className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#DFD7C8]"
+              >
+                <span className="text-xs font-medium text-[#4A3B32]">
+                  Canvas Orientation:
+                </span>
+                <div className="inline-flex items-center gap-1.5">
+                  {(
+                    [
+                      { id: 'portrait', label: 'Portrait' },
+                      { id: 'landscape', label: 'Landscape' },
+                      { id: 'square', label: 'Square' },
+                    ] as const
+                  ).map((orient) => {
+                    const isSelectedOrient =
+                      (config.orientation ?? 'portrait') === orient.id;
+                    return (
+                      <button
+                        key={orient.id}
+                        type="button"
+                        data-testid={`curation-orientation-${orient.id}`}
+                        aria-pressed={isSelectedOrient}
+                        onClick={() =>
+                          applyStructuredConfigChange({ orientation: orient.id })
+                        }
+                        className={`min-h-[44px] rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all ${
+                          isSelectedOrient
+                            ? 'border-[#9E5A3C] bg-[#9E5A3C] text-[#FAF6EE]'
+                            : 'border-[#DFD7C8] bg-[#F5F0E6] text-[#4A3B32] hover:border-[#9E5A3C]/60'
+                        }`}
+                      >
+                        {orient.label}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
 

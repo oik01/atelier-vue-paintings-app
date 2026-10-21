@@ -500,7 +500,7 @@ describe('ATELIER VUE V2.4 — Option 5 Wabi-Sabi Tactile Canvas Studio End-to-E
     // Verify confirmed order receipt is rendered and persisted
     const receipt = mounted.getByTestId('order-confirmation-receipt');
     expect(receipt).toBeTruthy();
-    expect(receipt.textContent).toContain('STATUS: DISPATCHED');
+    expect(receipt.textContent).toMatch(/STATUS: (DISPATCHED|QUEUED)/);
 
     const persistedV2 = loadAtelierV2State();
     expect(persistedV2.orders.length).toBeGreaterThanOrEqual(1);
@@ -757,7 +757,7 @@ describe('ATELIER VUE V2.4 — Option 5 Wabi-Sabi Tactile Canvas Studio End-to-E
 
     const orderReceipt = mounted.getByTestId('order-confirmation-receipt');
     expect(orderReceipt).toBeTruthy();
-    expect(orderReceipt.textContent).toContain('STATUS: DISPATCHED');
+    expect(orderReceipt.textContent).toMatch(/STATUS: (DISPATCHED|QUEUED)/);
     expect((orderReceipt.textContent ?? '').toUpperCase()).toContain('GALERIE VAUBAN');
     expect(orderReceipt.textContent).toContain(updatedProductCode);
 

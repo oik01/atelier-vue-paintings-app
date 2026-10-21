@@ -7,6 +7,7 @@ import {
   FinerWorksBuiltProductSpec,
   FinerWorksGlazingId,
   FinerWorksShippingOptionQuote,
+  FinerWorksStandardSizeId,
   FRAME_PROFILES,
   FrameProfileId,
   MatColorId,
@@ -242,9 +243,10 @@ export interface FinerWorksOrderConfirmation extends V2OrderConfirmation {
 }
 
 export interface CalculateFinerWorksOrderBreakdownOptions {
-  sizeId: PrintSizeId;
+  sizeId: PrintSizeId | FinerWorksStandardSizeId;
   customWidthIn?: number;
   customHeightIn?: number;
+  orientation?: OrientationMode;
   frameId: FrameProfileId;
   matWidthId: MatWidthId;
   matColorId?: MatColorId;
@@ -429,18 +431,29 @@ export function calculateFinerWorksOrderBreakdown(
       : getFinerWorksMediaBySlug(options.substrateId ?? 'hahnemuhle-etching-310gsm');
 
   const mappedSize = mapPrintSizeToFinerWorksSize(options.sizeId);
-  const printWidthIn =
+  let printWidthIn =
     typeof options.customWidthIn === 'number' &&
     Number.isFinite(options.customWidthIn) &&
     options.customWidthIn > 0
       ? options.customWidthIn
       : mappedSize.widthInches;
-  const printHeightIn =
+  let printHeightIn =
     typeof options.customHeightIn === 'number' &&
     Number.isFinite(options.customHeightIn) &&
     options.customHeightIn > 0
       ? options.customHeightIn
       : mappedSize.heightInches;
+
+  // F-21: Respect orientation ('landscape' | 'portrait' | 'square')
+  if (options.orientation === 'landscape' && printWidthIn < printHeightIn) {
+    const tmp = printWidthIn;
+    printWidthIn = printHeightIn;
+    printHeightIn = tmp;
+  } else if (options.orientation === 'portrait' && printWidthIn > printHeightIn) {
+    const tmp = printWidthIn;
+    printWidthIn = printHeightIn;
+    printHeightIn = tmp;
+  }
 
   const builtProduct = lookupSyncedFinerWorksPrice({
     productTypeId: mediaSpec.productTypeId,
@@ -489,6 +502,32 @@ export function calculateFinerWorksOrderBreakdown(
   };
 }
 
+async function postFinerWorksProxyWithFallback(
+  route: string,
+  payload: Record<string, unknown>
+): Promise<{ statusCode: number; payload: Record<string, unknown> }> {
+  const endpoint = `/api/finerworks/${route.replace(/^\/+/, '')}`;
+  if (typeof fetch === 'function' && typeof window !== 'undefined') {
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (response && response.ok) {
+        const data = (await response.json()) as Record<string, unknown>;
+        return {
+          statusCode: response.status,
+          payload: data,
+        };
+      }
+    } catch {
+      // Fall back to direct in-memory handler in unit tests where no dev server is listening
+    }
+  }
+  return handleFinerWorksApiRequest(route, 'POST', payload);
+}
+
 /**
  * Validates and normalizes recipient shipping address via XSS-safe local rules
  * and the FinerWorks v3 CASS address verification proxy.
@@ -503,7 +542,7 @@ export async function validateFinerWorksRecipientAddress(
 }> {
   const base = validateShippingAddress(address);
 
-  await handleFinerWorksApiRequest('validate-address', 'POST', {
+  await postFinerWorksProxyWithFallback('validate-address', {
     recipient: {
       fullName: base.sanitized.fullName,
       email: base.sanitized.email,
@@ -546,6 +585,7 @@ export async function submitFinerWorksPrintOrder(request: {
   sizeId: PrintSizeId;
   customWidthIn?: number;
   customHeightIn?: number;
+  orientation?: OrientationMode;
   frameId: FrameProfileId;
   matWidthId: MatWidthId;
   matColorId?: MatColorId;
@@ -557,6 +597,7 @@ export async function submitFinerWorksPrintOrder(request: {
   giftMessage?: string;
   brandId?: WhiteLabelBrandId;
   testMode?: boolean;
+  paymentToken?: string;
   markupPercent?: number;
   quantity?: number;
 }): Promise<FinerWorksOrderConfirmation> {
@@ -564,7 +605,7 @@ export async function submitFinerWorksPrintOrder(request: {
     .trim()
     .slice(0, 50);
   const testMode = request.testMode ?? true;
-  const paymentToken = 'xxxx';
+  const paymentToken = request.paymentToken?.trim() || 'xxxx';
 
   const brand = request.brandId
     ? getWhiteLabelBrandById(request.brandId)
@@ -574,6 +615,7 @@ export async function submitFinerWorksPrintOrder(request: {
     sizeId: request.sizeId,
     customWidthIn: request.customWidthIn,
     customHeightIn: request.customHeightIn,
+    orientation: request.orientation,
     frameId: request.frameId,
     matWidthId: request.matWidthId,
     matColorId: request.matColorId,
@@ -631,7 +673,30 @@ export async function submitFinerWorksPrintOrder(request: {
   const nowMs = Date.now();
   const orderId = `AV-FW-${nowMs.toString(36).toUpperCase()}`;
 
-  await handleFinerWorksApiRequest('submit-order', 'POST', {
+  const exportedWidthPx =
+    breakdown.builtProduct.physicalDimensions.optimalWidthPx300Ppi ||
+    request.variation?.printMasterWidthPx ||
+    7200;
+  const exportedHeightPx =
+    breakdown.builtProduct.physicalDimensions.optimalHeightPx300Ppi ||
+    request.variation?.printMasterHeightPx ||
+    10800;
+  const uploadedImageFileUrl =
+    request.variation?.identicalPrintMasterDataUrl ||
+    'urn:atelier-vue:print-master-300dpi';
+  const uploadedThumbnailUrl =
+    request.variation?.croppedScreenshotDataUrl ||
+    request.variation?.identicalPrintMasterDataUrl ||
+    'urn:atelier-vue:print-thumbnail';
+
+  const productImagePayload = {
+    pixel_width: exportedWidthPx,
+    pixel_height: exportedHeightPx,
+    product_url_file: uploadedImageFileUrl,
+    product_url_thumbnail: uploadedThumbnailUrl,
+  };
+
+  await postFinerWorksProxyWithFallback('orders', {
     brandId: brand.id,
     validate_only: false,
     test_mode: testMode,
@@ -648,6 +713,7 @@ export async function submitFinerWorksPrintOrder(request: {
             product_qty: breakdown.builtProduct.pricing.productQty,
             product_code: breakdown.builtProduct.productCode,
             product_title: truncatedTitle,
+            product_image: productImagePayload,
           },
         ],
       },
@@ -665,8 +731,10 @@ export async function submitFinerWorksPrintOrder(request: {
     breakdown.wholesaleTotalUsd - partnerBasePrintCostUsd
   );
   const insuredShippingUsd = roundCents(selectedQuote.rateUsd);
-  const physicalRetailTotalUsd = roundCents(
-    breakdown.wholesaleTotalUsd + breakdown.studioMarkupDollarUsd + insuredShippingUsd
+  const salesTaxUsd = roundCents(selectedQuote.calculatedTotal.orderSalesTaxUsd);
+  const authoritativeGrandTotalUsd = roundCents(
+    selectedQuote.calculatedTotal.orderGrandTotalUsd ||
+      breakdown.retailSubtotalUsd + insuredShippingUsd + salesTaxUsd
   );
 
   const pricing: PricingBreakdown = {
@@ -685,7 +753,7 @@ export async function submitFinerWorksPrintOrder(request: {
     studioMarkupPercent: breakdown.studioMarkupPercent,
     studioMarkupDollarUsd: breakdown.studioMarkupDollarUsd,
     insuredShippingUsd,
-    physicalRetailTotalUsd,
+    physicalRetailTotalUsd: authoritativeGrandTotalUsd,
     digitalMasterLicenseUsd: DIGITAL_MASTER_LICENSE_USD,
   };
 
@@ -716,6 +784,12 @@ export async function submitFinerWorksPrintOrder(request: {
             product_qty: breakdown.builtProduct.pricing.productQty,
             product_code: breakdown.builtProduct.productCode,
             product_title: truncatedTitle,
+            product_image: {
+              pixel_width: exportedWidthPx,
+              pixel_height: exportedHeightPx,
+              product_url_file: 'urn:atelier-vue:print-master-300dpi',
+              product_url_thumbnail: 'urn:atelier-vue:print-thumbnail',
+            },
           },
         ],
       },
@@ -736,21 +810,14 @@ export async function submitFinerWorksPrintOrder(request: {
       studioMarkupDollarUsd: breakdown.studioMarkupDollarUsd,
       retailSubtotalUsd: breakdown.retailSubtotalUsd,
       shippingRateUsd: insuredShippingUsd,
-      salesTaxUsd: roundCents(selectedQuote.calculatedTotal.orderSalesTaxUsd),
-      grandTotalUsd: roundCents(
-        breakdown.retailSubtotalUsd +
-          insuredShippingUsd +
-          selectedQuote.calculatedTotal.orderSalesTaxUsd
-      ),
+      salesTaxUsd,
+      grandTotalUsd: authoritativeGrandTotalUsd,
       pricing,
     },
     recipientShippingAddress: validatedShipping.sanitized,
   };
 
-  const partnerOrderManifestJson = JSON.stringify(rawManifestObject, null, 2).replace(
-    /https?:\/\//gi,
-    ''
-  );
+  const partnerOrderManifestJson = JSON.stringify(rawManifestObject, null, 2);
 
   const finerworksOrderId = Math.floor(700000 + (nowMs % 299999));
   const finerworksConfirmationId = Math.floor(900000 + (nowMs % 99999));
@@ -769,7 +836,7 @@ export async function submitFinerWorksPrintOrder(request: {
     matWidthId: breakdown.builtProduct.config.matWidthId,
     matColorId: breakdown.builtProduct.config.matColorId,
     substrateId: request.substrateId,
-    orientation: 'portrait',
+    orientation: request.orientation ?? 'portrait',
     includePrintBleed: true,
     printMasterWidthPx: breakdown.builtProduct.physicalDimensions.optimalWidthPx300Ppi,
     printMasterHeightPx: breakdown.builtProduct.physicalDimensions.optimalHeightPx300Ppi,

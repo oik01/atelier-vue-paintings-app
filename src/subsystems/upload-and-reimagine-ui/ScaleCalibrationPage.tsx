@@ -146,18 +146,73 @@ export function computeCaliperAngleInfo(cal: ImageCaliperSegment): {
   };
 }
 
+export function parseSvgNaturalDimensions(
+  dataUrl?: string | null
+): { width: number; height: number } | null {
+  if (!dataUrl || !dataUrl.startsWith('data:image/svg+xml')) {
+    return null;
+  }
+  try {
+    const commaIdx = dataUrl.indexOf(',');
+    if (commaIdx < 0) return null;
+    const rawPayload = dataUrl.slice(commaIdx + 1);
+    const decoded = dataUrl.includes(';base64,')
+      ? typeof atob === 'function'
+        ? atob(rawPayload)
+        : ''
+      : decodeURIComponent(rawPayload);
+    const vbMatch = decoded.match(
+      /viewBox=["']\s*[-0-9.]+\s+[-0-9.]+\s+([0-9.]+)\s+([0-9.]+)\s*["']/i
+    );
+    if (vbMatch) {
+      const w = Number(vbMatch[1]);
+      const h = Number(vbMatch[2]);
+      if (Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0) {
+        return { width: w, height: h };
+      }
+    }
+    const wMatch = decoded.match(/\bwidth=["']([0-9.]+)(?:px)?["']/i);
+    const hMatch = decoded.match(/\bheight=["']([0-9.]+)(?:px)?["']/i);
+    if (wMatch && hMatch) {
+      const w = Number(wMatch[1]);
+      const h = Number(hMatch[1]);
+      if (Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0) {
+        return { width: w, height: h };
+      }
+    }
+  } catch {
+    // Ignore malformed SVG URI
+  }
+  return null;
+}
+
 export function computeFallbackScaleRecommendation(
   questions: ScaleCalibrationQuestion[],
   options?: {
     cropBox?: NormalizedCropBox;
     frameMouldingWidthInches?: number;
     matWidthInches?: number;
+    imageWidthPx?: number;
+    imageHeightPx?: number;
   }
 ): ScaleCalibrationResult {
   const safeQuestions =
     questions && questions.length > 0
       ? questions
       : DEFAULT_SCALE_CALIBRATION_QUESTIONS;
+
+  const imageWidthPx =
+    typeof options?.imageWidthPx === 'number' &&
+    Number.isFinite(options.imageWidthPx) &&
+    options.imageWidthPx > 0
+      ? options.imageWidthPx
+      : 1000;
+  const imageHeightPx =
+    typeof options?.imageHeightPx === 'number' &&
+    Number.isFinite(options.imageHeightPx) &&
+    options.imageHeightPx > 0
+      ? options.imageHeightPx
+      : 1000;
 
   const answered = safeQuestions.filter(
     (q) =>
@@ -216,12 +271,10 @@ export function computeFallbackScaleRecommendation(
   }
 
   const box = options?.cropBox ?? { ymin: 180, xmin: 260, ymax: 560, xmax: 740 };
-  const cropSpanX = Math.max(80, Math.min(850, Math.abs(box.xmax - box.xmin)));
-  const cropSpanY = Math.max(80, Math.min(850, Math.abs(box.ymax - box.ymin)));
+  const cropSpanNormX = Math.max(60, Math.min(950, Math.abs(box.xmax - box.xmin)));
+  const cropSpanNormY = Math.max(60, Math.min(950, Math.abs(box.ymax - box.ymin)));
 
   const answeredScales: number[] = [];
-  const horizontalInchesPerUnit: number[] = [];
-  const verticalInchesPerUnit: number[] = [];
 
   for (let i = 0; i < safeQuestions.length; i++) {
     const q = safeQuestions[i];
@@ -236,24 +289,21 @@ export function computeFallbackScaleRecommendation(
           (q.caliper?.badgeCode && dq.caliper?.badgeCode === q.caliper.badgeCode)
       ) ?? DEFAULT_SCALE_CALIBRATION_QUESTIONS[i];
     const cal = q.caliper ?? fallbackDef?.caliper;
-    const span = cal
-      ? Math.max(60, Math.hypot(cal.x2 - cal.x1, cal.y2 - cal.y1))
+
+    const dxPx = cal
+      ? ((cal.x2 - cal.x1) / 1000) * imageWidthPx
       : i === 0
-      ? 580
-      : 774;
+        ? 0.435 * imageWidthPx
+        : 0;
+    const dyPx = cal
+      ? ((cal.y2 - cal.y1) / 1000) * imageHeightPx
+      : i === 0
+        ? 0
+        : 0.774 * imageHeightPx;
+    const spanPx = Math.max(1, Math.hypot(dxPx, dyPx));
 
-    const scale = val / span;
-    answeredScales.push(scale);
-
-    if (cal) {
-      const dx = Math.abs(cal.x2 - cal.x1);
-      const dy = Math.abs(cal.y2 - cal.y1);
-      if (cal.axis === 'vertical' || dy > dx) {
-        verticalInchesPerUnit.push(scale);
-      } else {
-        horizontalInchesPerUnit.push(scale);
-      }
-    }
+    const inchesPerPixel = val / spanPx;
+    answeredScales.push(inchesPerPixel);
   }
 
   let scaleDiscrepancyPercent = 0;
@@ -263,8 +313,9 @@ export function computeFallbackScaleRecommendation(
   if (answeredScales.length >= 2) {
     const scale1 = answeredScales[0];
     const scale2 = answeredScales[1];
+    const meanScale = (scale1 + scale2) / 2;
     scaleDiscrepancyPercent =
-      Math.round((Math.abs(scale1 - scale2) / Math.max(1e-6, scale1)) * 1000) / 10;
+      Math.round((Math.abs(scale1 - scale2) / Math.max(1e-6, meanScale)) * 1000) / 10;
     if (scaleDiscrepancyPercent > 5.0) {
       hasScaleInaccuracyError = true;
       scaleErrorExplanation = `Measurement Inaccuracy Error: Your two measurements differ in scale by ${scaleDiscrepancyPercent}% (exceeds the 5% maximum tolerance). Please make sure both measurements are taken on the same wall at the same distance from the camera in a head-on level photo, and adjust the caliper endpoints or inch values so they agree within 5%.`;
@@ -285,45 +336,21 @@ export function computeFallbackScaleRecommendation(
   let calculatedOuterFrameHeightInches = Math.round(targetArtWidth * 1.33 * 10) / 10;
 
   if (answeredScales.length > 0) {
-    const avgAllScale =
+    const avgInchesPerPixel =
       answeredScales.reduce((a, b) => a + b, 0) / answeredScales.length;
-    const avgHorizScale =
-      horizontalInchesPerUnit.length > 0
-        ? horizontalInchesPerUnit.reduce((a, b) => a + b, 0) /
-          horizontalInchesPerUnit.length
-        : avgAllScale;
-    const avgVertScale =
-      verticalInchesPerUnit.length > 0
-        ? verticalInchesPerUnit.reduce((a, b) => a + b, 0) /
-          verticalInchesPerUnit.length
-        : avgAllScale;
+    const outerFrameWidthIn =
+      (cropSpanNormX / 1000) * imageWidthPx * avgInchesPerPixel;
+    const outerFrameHeightIn =
+      (cropSpanNormY / 1000) * imageHeightPx * avgInchesPerPixel;
 
-    if (options?.cropBox) {
-      // Direct proportional geometry from the aligned white frame box (cropSpanX, cropSpanY)
-      calculatedOuterFrameWidthInches =
-        Math.round(Math.max(12, Math.min(64, cropSpanX * avgHorizScale)) * 10) / 10;
-      calculatedOuterFrameHeightInches =
-        Math.round(Math.max(14, Math.min(76, cropSpanY * avgVertScale)) * 10) / 10;
-      targetArtWidth = Math.max(
-        8,
-        calculatedOuterFrameWidthInches - totalBorderDeduction
-      );
-    } else {
-      const rawCalibratedW = cropSpanX * avgHorizScale;
-      const blendedW = rawCalibratedW * 0.55 + targetArtWidth * 0.45;
-      calculatedOuterFrameWidthInches =
-        Math.round(Math.max(12, Math.min(54, blendedW)) * 10) / 10;
-      if (verticalInchesPerUnit.length > 0) {
-        const rawCalibratedH = cropSpanY * avgVertScale;
-        const aspectH = calculatedOuterFrameWidthInches * 1.33;
-        const blendedH = rawCalibratedH * 0.55 + aspectH * 0.45;
-        calculatedOuterFrameHeightInches =
-          Math.round(Math.max(16, Math.min(66, blendedH)) * 10) / 10;
-      } else {
-        calculatedOuterFrameHeightInches =
-          Math.round(calculatedOuterFrameWidthInches * 1.33 * 10) / 10;
-      }
-    }
+    calculatedOuterFrameWidthInches =
+      Math.round(Math.max(8, Math.min(120, outerFrameWidthIn)) * 10) / 10;
+    calculatedOuterFrameHeightInches =
+      Math.round(Math.max(8, Math.min(120, outerFrameHeightIn)) * 10) / 10;
+    targetArtWidth = Math.max(
+      8,
+      calculatedOuterFrameWidthInches - totalBorderDeduction
+    );
   }
 
   const calculatedInnerPictureWidthInches =
@@ -478,6 +505,12 @@ export const ScaleCalibrationPage: React.FC<ScaleCalibrationPageProps> = ({
   const [localCropBox, setLocalCropBox] = useState<NormalizedCropBox | null>(null);
   const [isAutoAligningFrameBox, setIsAutoAligningFrameBox] = useState<boolean>(false);
 
+  // Track natural pixel dimensions of the displayed room image for isotropic [0..1000] -> pixel conversion
+  const [imageNaturalDims, setImageNaturalDims] = useState<{
+    width: number;
+    height: number;
+  }>({ width: 1000, height: 1000 });
+
   // User starts with 1 caliper, takes the measurement and leaves it, then has the option to add a 2nd measurement
   const initialAnsweredCount = (questions ?? []).filter(
     (q) =>
@@ -603,6 +636,8 @@ export const ScaleCalibrationPage: React.FC<ScaleCalibrationPageProps> = ({
       cropBox: cropBox || localCropBox ? effectiveCropBox : undefined,
       frameMouldingWidthInches: frameSpec.mouldingWidthInches,
       matWidthInches: matInches,
+      imageWidthPx: imageNaturalDims.width,
+      imageHeightPx: imageNaturalDims.height,
     }
   );
 
@@ -611,40 +646,21 @@ export const ScaleCalibrationPage: React.FC<ScaleCalibrationPageProps> = ({
     Object.keys(localCalipers).length > 0 ||
     localCropBox !== null;
 
+  const hasAnsweredVisibleQuestions = visibleQuestions.some(
+    (q) =>
+      typeof q.userAnswerInches === 'number' &&
+      Number.isFinite(q.userAnswerInches) &&
+      q.userAnswerInches > 0
+  );
+
   const effectiveRecommendation: ScaleCalibrationResult =
     scaleRecommendation &&
     !hasLocalChanges &&
+    !hasAnsweredVisibleQuestions &&
     (scaleRecommendation.isCalibrated || scaleRecommendation.hasScaleInaccuracyError)
       ? {
           ...fallbackComputed,
           ...scaleRecommendation,
-          calculatedOuterFrameWidthInches:
-            scaleRecommendation.calculatedOuterFrameWidthInches ??
-            fallbackComputed.calculatedOuterFrameWidthInches,
-          calculatedOuterFrameHeightInches:
-            scaleRecommendation.calculatedOuterFrameHeightInches ??
-            fallbackComputed.calculatedOuterFrameHeightInches,
-          calculatedInnerPictureWidthInches:
-            scaleRecommendation.calculatedInnerPictureWidthInches ??
-            fallbackComputed.calculatedInnerPictureWidthInches,
-          calculatedInnerPictureHeightInches:
-            scaleRecommendation.calculatedInnerPictureHeightInches ??
-            fallbackComputed.calculatedInnerPictureHeightInches,
-          suggestedEditionOuterWidthInches:
-            scaleRecommendation.suggestedEditionOuterWidthInches ??
-            fallbackComputed.suggestedEditionOuterWidthInches,
-          suggestedEditionOuterHeightInches:
-            scaleRecommendation.suggestedEditionOuterHeightInches ??
-            fallbackComputed.suggestedEditionOuterHeightInches,
-          scaleDiscrepancyPercent:
-            scaleRecommendation.scaleDiscrepancyPercent ??
-            fallbackComputed.scaleDiscrepancyPercent,
-          hasScaleInaccuracyError:
-            scaleRecommendation.hasScaleInaccuracyError ??
-            fallbackComputed.hasScaleInaccuracyError,
-          scaleErrorExplanation:
-            scaleRecommendation.scaleErrorExplanation ??
-            fallbackComputed.scaleErrorExplanation,
         }
       : fallbackComputed;
 
@@ -965,6 +981,7 @@ export const ScaleCalibrationPage: React.FC<ScaleCalibrationPageProps> = ({
             }
             className="sr-only"
             tabIndex={-1}
+            aria-hidden="true"
           >
             Back
           </button>
@@ -1218,6 +1235,13 @@ export const ScaleCalibrationPage: React.FC<ScaleCalibrationPageProps> = ({
                     alt="Head-On Space with Pinpoint Measurement Calipers"
                     data-testid="scale-room-reference-thumb"
                     draggable={false}
+                    onLoad={(e) => {
+                      const natW = e.currentTarget.naturalWidth;
+                      const natH = e.currentTarget.naturalHeight;
+                      if (natW > 0 && natH > 0) {
+                        setImageNaturalDims({ width: natW, height: natH });
+                      }
+                    }}
                     className="block w-full h-auto select-none"
                   />
 
@@ -1765,7 +1789,11 @@ export const ScaleCalibrationPage: React.FC<ScaleCalibrationPageProps> = ({
                         customFwSpec.physicalDimensions.printHeightIn,
                         customFwSpec
                       );
-                      onApplyScaleAndCreate();
+                      if (onCloseSizingModal) {
+                        onCloseSizingModal();
+                      } else {
+                        onApplyScaleAndCreate();
+                      }
                     }}
                     className={`w-full min-h-[44px] inline-flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${
                       isErrorBlocked
@@ -1922,7 +1950,7 @@ export const ScaleCalibrationPage: React.FC<ScaleCalibrationPageProps> = ({
                           e.stopPropagation();
                           handleRemoveSecondCaliper();
                         }}
-                        className="min-h-[36px] px-3 py-1 rounded-lg border border-[#C9BFA8] bg-[#F5F0E6] text-xs font-medium text-[#57534E] hover:bg-[#EFECE6] hover:text-[#1F1C18]"
+                        className="min-h-[44px] px-3 py-1 rounded-lg border border-[#C9BFA8] bg-[#F5F0E6] text-xs font-medium text-[#57534E] hover:bg-[#EFECE6] hover:text-[#1F1C18]"
                       >
                         Remove 2nd Measurement
                       </button>
@@ -2078,6 +2106,7 @@ export const ScaleCalibrationPage: React.FC<ScaleCalibrationPageProps> = ({
                 onClick={onApplyScaleAndCreate}
                 className="sr-only"
                 tabIndex={-1}
+                aria-hidden="true"
               >
                 Apply Caliper Measurements
               </button>

@@ -50,15 +50,18 @@ export interface SizeAndFrameScrollerProps {
   selectedMediaId?: number;
   selectedGlazingId?: FinerWorksGlazingId;
   selectedFinerWorksSizeId?: FinerWorksStandardSizeId;
+  selectedOrientation?: 'landscape' | 'portrait' | 'square';
   customPrintWidthIn?: number;
   customPrintHeightIn?: number;
   includeBleed?: boolean;
   isDownloadingPrint?: boolean;
+  hasUnlockedDigitalMaster?: boolean;
   estimatedRetailPriceUsd?: number;
   scaleRecommendation?: ScaleCalibrationResult | null;
   onOpenCaliperSizingTool?: () => void;
   onSelectArtPiece?: (index: number, piece: GeneratedArtPiece) => void;
   onSelectSize: (sizeId: PrintSizeId) => void;
+  onSelectOrientation?: (orientation: 'landscape' | 'portrait' | 'square') => void;
   onSelectFrame: (frameId: FrameProfileId) => void;
   onSelectMatWidth?: (matWidthId: MatWidthId) => void;
   onSelectMatColor?: (matColorId: MatColorId) => void;
@@ -76,6 +79,7 @@ export interface SizeAndFrameScrollerProps {
   onFinerWorksProductSpecChange?: (spec: FinerWorksBuiltProductSpec) => void;
   onToggleBleed?: (includeBleed: boolean) => void;
   onDirectDownloadPrint?: (result: HighResPrintMasterFileResult) => void | Promise<void>;
+  onOpenDownloadLicenseModal?: () => void;
   onOpenPrintOrderModal?: () => void;
   // Convenient optional aliases for root integration compatibility
   onDownloadPrint?: (result: HighResPrintMasterFileResult) => void | Promise<void>;
@@ -243,14 +247,17 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
   selectedMediaId,
   selectedGlazingId,
   selectedFinerWorksSizeId,
+  selectedOrientation,
   customPrintWidthIn,
   customPrintHeightIn,
   includeBleed,
   isDownloadingPrint = false,
+  hasUnlockedDigitalMaster = false,
   estimatedRetailPriceUsd,
   scaleRecommendation,
   onSelectArtPiece,
   onSelectSize,
+  onSelectOrientation,
   onSelectFrame,
   onSelectMatWidth,
   onSelectMatColor,
@@ -261,6 +268,7 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
   onFinerWorksProductSpecChange,
   onToggleBleed,
   onDirectDownloadPrint,
+  onOpenDownloadLicenseModal,
   onOpenPrintOrderModal,
   onDownloadPrint,
   onOrderPrintedVersion,
@@ -268,6 +276,9 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
   const [internalArtPieceIndex, setInternalArtPieceIndex] = useState<number>(
     activeArtPieceIndex ?? variation?.activeArtPieceIndex ?? 0
   );
+  const [internalOrientation, setInternalOrientation] = useState<
+    'landscape' | 'portrait' | 'square'
+  >(selectedOrientation ?? 'portrait');
   const [internalMatWidthId, setInternalMatWidthId] = useState<MatWidthId>(
     variation?.detectedMatWidthId ?? '1.5in'
   );
@@ -341,6 +352,12 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
   }, [selectedGlazingId]);
 
   useEffect(() => {
+    if (selectedOrientation) {
+      setInternalOrientation(selectedOrientation);
+    }
+  }, [selectedOrientation]);
+
+  useEffect(() => {
     if (typeof customPrintWidthIn === 'number') {
       setInternalCustomWidthIn(customPrintWidthIn);
       setDraftCustomWidth(String(customPrintWidthIn));
@@ -353,6 +370,9 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
       setDraftCustomHeight(String(customPrintHeightIn));
     }
   }, [customPrintHeightIn]);
+
+  const effectiveOrientation: 'landscape' | 'portrait' | 'square' =
+    selectedOrientation ?? internalOrientation;
 
   const effectiveScaleRecommendation: ScaleCalibrationResult | null =
     scaleRecommendation !== undefined
@@ -475,10 +495,27 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
   );
 
   const effectivePrintWidthIn: number = useMemo(() => {
-    const rawW =
+    let rawW =
       effectiveFinerWorksSizeId === 'custom'
         ? customPrintWidthIn ?? internalCustomWidthIn
         : customPrintWidthIn ?? effectiveFinerWorksSizeSpec.widthInches;
+    const rawH =
+      effectiveFinerWorksSizeId === 'custom'
+        ? customPrintHeightIn ?? internalCustomHeightIn
+        : customPrintHeightIn ?? effectiveFinerWorksSizeSpec.heightInches;
+    if (
+      effectiveFinerWorksSizeId !== 'custom' &&
+      customPrintWidthIn === undefined &&
+      customPrintHeightIn === undefined
+    ) {
+      if (effectiveOrientation === 'landscape') {
+        rawW = Math.max(rawW, rawH);
+      } else if (effectiveOrientation === 'square') {
+        rawW = Math.min(rawW, rawH);
+      } else {
+        rawW = Math.min(rawW, rawH);
+      }
+    }
     return Math.max(
       activeMediaSpec.minWidthIn,
       Math.min(activeMediaSpec.maxWidthIn, rawW)
@@ -486,17 +523,38 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
   }, [
     activeMediaSpec.maxWidthIn,
     activeMediaSpec.minWidthIn,
+    customPrintHeightIn,
     customPrintWidthIn,
     effectiveFinerWorksSizeId,
+    effectiveFinerWorksSizeSpec.heightInches,
     effectiveFinerWorksSizeSpec.widthInches,
+    effectiveOrientation,
+    internalCustomHeightIn,
     internalCustomWidthIn,
   ]);
 
   const effectivePrintHeightIn: number = useMemo(() => {
-    const rawH =
+    const rawW =
+      effectiveFinerWorksSizeId === 'custom'
+        ? customPrintWidthIn ?? internalCustomWidthIn
+        : customPrintWidthIn ?? effectiveFinerWorksSizeSpec.widthInches;
+    let rawH =
       effectiveFinerWorksSizeId === 'custom'
         ? customPrintHeightIn ?? internalCustomHeightIn
         : customPrintHeightIn ?? effectiveFinerWorksSizeSpec.heightInches;
+    if (
+      effectiveFinerWorksSizeId !== 'custom' &&
+      customPrintWidthIn === undefined &&
+      customPrintHeightIn === undefined
+    ) {
+      if (effectiveOrientation === 'landscape') {
+        rawH = Math.min(rawW, rawH);
+      } else if (effectiveOrientation === 'square') {
+        rawH = Math.min(rawW, rawH);
+      } else {
+        rawH = Math.max(rawW, rawH);
+      }
+    }
     return Math.max(
       activeMediaSpec.minHeightIn,
       Math.min(activeMediaSpec.maxHeightIn, rawH)
@@ -505,9 +563,13 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
     activeMediaSpec.maxHeightIn,
     activeMediaSpec.minHeightIn,
     customPrintHeightIn,
+    customPrintWidthIn,
     effectiveFinerWorksSizeId,
     effectiveFinerWorksSizeSpec.heightInches,
+    effectiveFinerWorksSizeSpec.widthInches,
+    effectiveOrientation,
     internalCustomHeightIn,
+    internalCustomWidthIn,
   ]);
 
   const liveBuiltProductSpec: FinerWorksBuiltProductSpec = useMemo(
@@ -653,6 +715,7 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
 
   const isExtendedOrCustomSizeActive =
     effectiveFinerWorksSizeId !== activeSizeId ||
+    effectiveOrientation !== 'portrait' ||
     typeof customPrintWidthIn === 'number' ||
     typeof customPrintHeightIn === 'number';
 
@@ -672,6 +735,38 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
       effectivePrintHeightIn,
     ]
   );
+
+  const handleSelectOrientation = (
+    nextOrientation: 'landscape' | 'portrait' | 'square'
+  ) => {
+    setInternalOrientation(nextOrientation);
+    onSelectOrientation?.(nextOrientation);
+    if (
+      effectiveFinerWorksSizeId === 'custom' ||
+      typeof customPrintWidthIn === 'number' ||
+      typeof customPrintHeightIn === 'number'
+    ) {
+      const curW = customPrintWidthIn ?? internalCustomWidthIn;
+      const curH = customPrintHeightIn ?? internalCustomHeightIn;
+      const nextW =
+        nextOrientation === 'landscape'
+          ? Math.max(curW, curH)
+          : nextOrientation === 'square'
+          ? Math.min(curW, curH)
+          : Math.min(curW, curH);
+      const nextH =
+        nextOrientation === 'landscape'
+          ? Math.min(curW, curH)
+          : nextOrientation === 'square'
+          ? Math.min(curW, curH)
+          : Math.max(curW, curH);
+      setInternalCustomWidthIn(nextW);
+      setInternalCustomHeightIn(nextH);
+      setDraftCustomWidth(String(nextW));
+      setDraftCustomHeight(String(nextH));
+      onChangeCustomDimensions?.(nextW, nextH);
+    }
+  };
 
   // Relative scale factor so larger physical sizes visibly scale the preview frame smoothly
   const previewScaleRatio = useMemo(() => {
@@ -1134,7 +1229,13 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
                     src={cleanInnerPrintUrl || activePrintUrl}
                     alt={`${activeTitle} — ${sizeSpec.labelInches} in ${frameSpec.name}`}
                     className={
-                      (selectedPiece?.internalBounds ?? variation?.detectedCropBox)
+                      selectedOrientation === 'landscape'
+                        ? 'block h-48 w-64 object-cover sm:h-56 sm:w-72'
+                        : selectedOrientation === 'square'
+                        ? 'block h-56 w-56 object-cover sm:h-60 sm:w-60'
+                        : selectedOrientation === 'portrait'
+                        ? 'block h-56 w-44 object-cover sm:h-64 sm:w-52'
+                        : (selectedPiece?.internalBounds ?? variation?.detectedCropBox)
                         ? (selectedPiece?.internalBounds ?? variation!.detectedCropBox).xmax -
                             (selectedPiece?.internalBounds ?? variation!.detectedCropBox).xmin >=
                           (selectedPiece?.internalBounds ?? variation!.detectedCropBox).ymax -
@@ -1213,6 +1314,12 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
             >
               ✓ 300 DPI Archival Quality Verified · Zero-Grain High-Definition Master up to 40&quot; × 60&quot;
             </span>
+            <span
+              data-testid="source-optical-ppi-badge"
+              className="rounded-full border border-[#DFD7C8] bg-[#FAF6EE] px-3 py-1 font-mono text-[11px] font-medium text-[#4A3B32] shadow-2xs"
+            >
+              Optical Source: ~{Math.max(1, Math.round(1200 / Math.max(1, effectivePrintWidthIn)))} PPI → Upscaled 300-DPI PNG (pHYs 11811 ppm)
+            </span>
             <span className="rounded-full border border-[#DFD7C8] bg-[#FAF6EE] px-3 py-1 text-xs text-[#655B50] shadow-2xs">
               {frameSpec.name} · {activeMediaSpec.shortName}
               {activeMatWidthId !== 'none'
@@ -1272,7 +1379,7 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
                   Select Recommended Size ({recommendedDimensionsLabel})
                 </button>
               ) : (
-                <span className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl border border-[#9E5A3C]/35 bg-[#FAF6EE] px-3 py-1.5 font-mono text-[11px] font-medium text-[#9E5A3C]">
+                <span className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-[#9E5A3C]/35 bg-[#FAF6EE] px-3 py-1.5 font-mono text-[11px] font-medium text-[#9E5A3C]">
                   ✓ Active Size Matches Your Room Measurements
                 </span>
               )}
@@ -1344,17 +1451,43 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
             <label className="font-mono text-xs font-semibold uppercase tracking-wider text-[#1F1C18]">
               1. Select Archival Print Size ({sizeSpec.scaleDescription})
             </label>
-            <button
-              type="button"
-              data-testid="toggle-extended-finerworks-sizes-btn"
-              aria-expanded={isExtendedSizesOpen}
-              onClick={() => setIsExtendedSizesOpen((prev) => !prev)}
-              className="min-h-[44px] rounded-xl border border-[#DFD7C8] bg-[#F5F0E6] px-3 py-1.5 font-mono text-[11px] font-semibold text-[#1F1C18] hover:bg-[#DFD7C8]/60 transition-colors cursor-pointer"
-            >
-              {isExtendedSizesOpen
-                ? 'All 10 Archival Sizes & Custom Exact-Inch Sizing ▴'
-                : 'All 10 Archival Sizes & Custom Exact-Inch Sizing ▾'}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <div
+                data-testid="print-orientation-selector"
+                className="inline-flex items-center gap-1 rounded-xl border border-[#DFD7C8] bg-[#F5F0E6] p-1"
+              >
+                {(['portrait', 'landscape', 'square'] as const).map((orient) => {
+                  const isOrientSelected = effectiveOrientation === orient;
+                  return (
+                    <button
+                      key={orient}
+                      type="button"
+                      data-testid={`orientation-btn-${orient}`}
+                      aria-pressed={isOrientSelected}
+                      onClick={() => handleSelectOrientation(orient)}
+                      className={`min-h-[44px] rounded-lg px-2.5 py-1 font-mono text-[11px] font-semibold capitalize transition-colors cursor-pointer ${
+                        isOrientSelected
+                          ? 'bg-[#1F1C18] text-[#FAF6EE]'
+                          : 'text-[#4A3B32] hover:bg-[#DFD7C8]/50'
+                      }`}
+                    >
+                      {orient}
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                data-testid="toggle-extended-finerworks-sizes-btn"
+                aria-expanded={isExtendedSizesOpen}
+                onClick={() => setIsExtendedSizesOpen((prev) => !prev)}
+                className="min-h-[44px] rounded-xl border border-[#DFD7C8] bg-[#F5F0E6] px-3 py-1.5 font-mono text-[11px] font-semibold text-[#1F1C18] hover:bg-[#DFD7C8]/60 transition-colors cursor-pointer"
+              >
+                {isExtendedSizesOpen
+                  ? 'All 10 Archival Sizes & Custom Exact-Inch Sizing ▴'
+                  : 'All 10 Archival Sizes & Custom Exact-Inch Sizing ▾'}
+              </button>
+            </div>
           </div>
 
           <div
@@ -1566,7 +1699,7 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
                   setFrameCatalogMode('curated');
                   setFrameSearchQuery('');
                 }}
-                className={`min-h-[38px] rounded-lg border px-3 py-1.5 font-mono text-[11px] font-semibold transition-colors cursor-pointer ${
+                className={`min-h-[44px] rounded-lg border px-3 py-1.5 font-mono text-[11px] font-semibold transition-colors cursor-pointer ${
                   frameCatalogMode === 'curated' && !frameSearchQuery
                     ? 'border-[#1F1C18] bg-[#1F1C18] text-[#FAF6EE]'
                     : 'border-[#DFD7C8] bg-[#FAF6EE] text-[#1F1C18] hover:border-[#9E5A3C]/50'
@@ -1582,7 +1715,7 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
                 onClick={() => {
                   setFrameCatalogMode('all');
                 }}
-                className={`min-h-[38px] rounded-lg border px-3 py-1.5 font-mono text-[11px] font-semibold transition-colors cursor-pointer ${
+                className={`min-h-[44px] rounded-lg border px-3 py-1.5 font-mono text-[11px] font-semibold transition-colors cursor-pointer ${
                   frameCatalogMode === 'all'
                     ? 'border-[#1F1C18] bg-[#1F1C18] text-[#FAF6EE]'
                     : 'border-[#DFD7C8] bg-[#FAF6EE] text-[#1F1C18] hover:border-[#9E5A3C]/50'
@@ -1596,7 +1729,7 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
                 data-testid="frame-collection-select"
                 value={frameCatalogMode}
                 onChange={(e) => setFrameCatalogMode(e.target.value)}
-                className="min-h-[38px] rounded-lg border border-[#DFD7C8] bg-[#FAF6EE] px-3 py-1.5 font-mono text-[11px] font-medium text-[#1F1C18]"
+                className="min-h-[44px] rounded-lg border border-[#DFD7C8] bg-[#FAF6EE] px-3 py-1.5 font-mono text-[11px] font-medium text-[#1F1C18]"
               >
                 <option value="curated">Curated Signatures (6 Mouldings)</option>
                 <option value="all">
@@ -1616,7 +1749,7 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
                 placeholder="Search SKU, walnut, gold, barnwood, float..."
                 value={frameSearchQuery}
                 onChange={(e) => setFrameSearchQuery(e.target.value)}
-                className="min-h-[38px] min-w-[210px] flex-1 rounded-lg border border-[#DFD7C8] bg-[#FAF6EE] px-3 py-1.5 font-mono text-[11px] text-[#1F1C18] placeholder:text-[#655B50]/70"
+                className="min-h-[44px] min-w-[210px] flex-1 rounded-lg border border-[#DFD7C8] bg-[#FAF6EE] px-3 py-1.5 font-mono text-[11px] text-[#1F1C18] placeholder:text-[#655B50]/70"
               />
             </div>
 
@@ -1634,7 +1767,7 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
                     data-testid={`frame-collection-pill-${col.slug}`}
                     aria-pressed={isActiveCol}
                     onClick={() => setFrameCatalogMode(col.slug)}
-                    className={`min-h-[32px] shrink-0 snap-start rounded-lg border px-2.5 py-1 font-mono text-[10px] font-medium transition-colors cursor-pointer ${
+                    className={`min-h-[44px] shrink-0 snap-start rounded-lg border px-2.5 py-1 font-mono text-[10px] font-medium transition-colors cursor-pointer ${
                       isActiveCol
                         ? 'border-[#9E5A3C] bg-[#9E5A3C] text-[#FAF6EE]'
                         : 'border-[#DFD7C8] bg-[#FAF6EE] text-[#4A3B32] hover:border-[#9E5A3C]/50'
@@ -2049,10 +2182,22 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
             <span className="font-medium">
               Prepared 300-DPI Print Master: <strong className="font-mono">{lastDownloadedResult.filename}</strong>
             </span>
-            <span className="font-mono text-[11px] text-[#4A3B32]">
-              {lastDownloadedResult.widthPx}×{lastDownloadedResult.heightPx} px · {lastDownloadedResult.dpi} DPI
-              {lastDownloadedResult.includedBleed ? ' · +0.25" Bleed' : ''}
-            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-[11px] text-[#4A3B32]">
+                {lastDownloadedResult.widthPx}×{lastDownloadedResult.heightPx} px · {lastDownloadedResult.dpi} DPI
+                {lastDownloadedResult.includedBleed ? ' · +0.25" Bleed' : ''}
+              </span>
+              {onOpenDownloadLicenseModal && (
+                <button
+                  type="button"
+                  data-testid="open-download-license-verification-btn"
+                  onClick={onOpenDownloadLicenseModal}
+                  className="inline-flex min-h-[44px] items-center justify-center rounded-lg border border-[#1F1C18] bg-[#FAF6EE] px-3 py-1.5 font-mono text-[11px] font-semibold text-[#1F1C18] hover:bg-[#F5F0E6]"
+                >
+                  Inspect Print Master &amp; License ($29.00)
+                </button>
+              )}
+            </div>
           </div>
         )}
 
@@ -2068,7 +2213,9 @@ export const SizeAndFrameScroller: React.FC<SizeAndFrameScrollerProps> = ({
             <span>
               {isGeneratingDownload || isDownloadingPrint
                 ? 'Preparing 300-DPI Print Master…'
-                : `Download High-Res Print File (300 DPI PNG)`}
+                : hasUnlockedDigitalMaster || Boolean(lastDownloadedResult)
+                ? 'Download High-Res Print File (300 DPI PNG · License Active)'
+                : 'Download High-Res Print File (300 DPI PNG · $29.00 Digital License)'}
             </span>
           </button>
 

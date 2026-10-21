@@ -57,16 +57,12 @@ function sanitizeGalleryText(rawText: string): string {
     .trim();
 }
 
-function getClientOpenRouterApiKey(): string {
-  try {
-    const metaEnv = (import.meta as unknown as { env?: Record<string, string | undefined> })?.env;
-    if (metaEnv?.VITE_OPENROUTER_API_KEY) {
-      return metaEnv.VITE_OPENROUTER_API_KEY.trim();
-    }
-  } catch {
-    // Ignore in environments without import.meta.env
-  }
-  return '';
+function isJsdomRuntime(): boolean {
+  return (
+    typeof navigator !== 'undefined' &&
+    typeof navigator.userAgent === 'string' &&
+    navigator.userAgent.toLowerCase().includes('jsdom')
+  );
 }
 
 function extractMessageTextFromOpenRouterResponse(rawResponseJson: unknown): string {
@@ -117,46 +113,30 @@ async function postOpenRouterVisionCheck(
     return null;
   }
 
-  const clientApiKey = getClientOpenRouterApiKey();
-  const proxyHeaders: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  if (clientApiKey) {
-    proxyHeaders['X-OpenRouter-Key'] = clientApiKey;
-    proxyHeaders['Authorization'] = `Bearer ${clientApiKey}`;
-  }
-
   try {
     const proxyResponse = await fetch('/api/openrouter/chat', {
       method: 'POST',
-      headers: proxyHeaders,
+      headers: {
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify(payload),
     });
+    if (proxyResponse && (proxyResponse.status === 401 || proxyResponse.status === 403)) {
+      throw new Error(
+        'AI generation failed: Invalid or unauthorized OpenRouter API key (HTTP 401). Please configure a valid OPENROUTER_API_KEY in .env.'
+      );
+    }
     if (proxyResponse && proxyResponse.ok) {
       return await proxyResponse.json();
     }
-  } catch {
-    // Fall through to direct OpenRouter call if client key is configured
-  }
-
-  if (clientApiKey) {
-    try {
-      const directResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${clientApiKey}`,
-          'HTTP-Referer':
-            typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173',
-          'X-Title': 'Atelier Vue FinerWorks Checker Agent',
-        },
-        body: JSON.stringify(payload),
-      });
-      if (directResponse && directResponse.ok) {
-        return await directResponse.json();
-      }
-    } catch {
-      // Fall back to deterministic verification
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      (err.message.includes('HTTP 401') ||
+        err.message.includes('HTTP 403') ||
+        err.message.includes('Invalid or unauthorized OpenRouter API key'))
+    ) {
+      throw err;
     }
   }
 
@@ -211,6 +191,8 @@ export async function verifyFinerWorksOptionsComplianceWithAi(
   let llmSubstrateValid: boolean | null = null;
   const llmDiscrepancies: string[] = [];
   let llmCorrectionInstructions = '';
+  let visionVerificationSkipped = false;
+  const isJsdom = isJsdomRuntime();
 
   if (
     !detectedAttrs.skipNetworkInJsdom &&
@@ -297,10 +279,24 @@ export async function verifyFinerWorksOptionsComplianceWithAi(
         ) {
           llmCorrectionInstructions = sanitizeGalleryText(parsed.correction_instructions.trim());
         }
+      } else if (!isJsdom) {
+        visionVerificationSkipped = true;
       }
-    } catch {
-      // Gracefully proceed to Part B deterministic verification
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        (err.message.includes('HTTP 401') ||
+          err.message.includes('HTTP 403') ||
+          err.message.includes('Invalid or unauthorized OpenRouter API key'))
+      ) {
+        throw err;
+      }
+      if (!isJsdom) {
+        visionVerificationSkipped = true;
+      }
     }
+  } else if (!reimaginedRoomDataUrl || !reimaginedRoomDataUrl.trim() || !isJsdom) {
+    visionVerificationSkipped = true;
   }
 
   // ==========================================================================
@@ -653,6 +649,7 @@ export async function verifyFinerWorksOptionsComplianceWithAi(
   }
 
   const passed =
+    !visionVerificationSkipped &&
     frameOptionValid &&
     mattingAndGlazingValid &&
     sizingAndAspectRatioValid &&
@@ -673,9 +670,11 @@ export async function verifyFinerWorksOptionsComplianceWithAi(
   const matchedFinishesSummary = `${normalizedMedia.shortName} · ${normalizedFrame.name} · ${matFinishLabel} · ${glazingFinishLabel}`;
 
   const verificationSummary = sanitizeGalleryText(
-    passed
-      ? `FinerWorks Archival Verification Passed: ${matchedFinishesSummary} (${matchedSizeLabel}, SKU ${builtSpec.productCode}).`
-      : `FinerWorks Compliance Adjustment Needed: ${discrepanciesFound.join(' ')}`
+    visionVerificationSkipped
+      ? `Vision verification skipped; catalog SKU ${builtSpec.productCode} mapped (${matchedFinishesSummary}).`
+      : passed
+        ? `FinerWorks Archival Verification Passed: ${matchedFinishesSummary} (${matchedSizeLabel}, SKU ${builtSpec.productCode}).`
+        : `FinerWorks Compliance Adjustment Needed: ${discrepanciesFound.join(' ')}`
   );
 
   const correctionInstructions =
@@ -683,6 +682,7 @@ export async function verifyFinerWorksOptionsComplianceWithAi(
 
   return {
     passed,
+    ...(visionVerificationSkipped ? { skipped: true } : {}),
     frameOptionValid,
     mattingAndGlazingValid,
     sizingAndAspectRatioValid,
@@ -697,5 +697,5 @@ export async function verifyFinerWorksOptionsComplianceWithAi(
     discrepanciesFound,
     correctionInstructions,
     attemptsUsed: Math.max(1, attemptNumber),
-  };
+  } as FinerWorksOptionsVerification;
 }

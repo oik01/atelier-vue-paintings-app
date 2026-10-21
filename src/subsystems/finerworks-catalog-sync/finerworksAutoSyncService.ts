@@ -304,7 +304,9 @@ export async function syncFinerWorksCatalogAndPrices(options?: {
 }): Promise<FinerWorksCatalogSyncSnapshot> {
   const baseSnapshot = createVerifiedCatalogSnapshot(Date.now());
   const shouldAttemptNetwork =
-    Boolean(options?.forceNetwork) || typeof window !== 'undefined';
+    Boolean(options?.forceNetwork) ||
+    typeof window !== 'undefined' ||
+    typeof fetch === 'function';
 
   if (shouldAttemptNetwork && typeof fetch === 'function') {
     try {
